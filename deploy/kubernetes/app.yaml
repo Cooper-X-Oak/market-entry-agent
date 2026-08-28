@@ -1,0 +1,176 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: imea
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: imea-config
+  namespace: imea
+data:
+  NODE_ENV: production
+  APP_BASE_URL: https://market-entry.example.com
+  API_BASE_URL: https://market-entry-api.example.com
+  TEMPORAL_NAMESPACE: default
+  TEMPORAL_TASK_QUEUE_PREFIX: imea
+  S3_REGION: us-east-1
+  S3_BUCKET: market-entry
+  S3_FORCE_PATH_STYLE: "false"
+  OPENAI_MODEL_RESEARCH: gpt-5
+  OPENAI_MODEL_EXTRACTION: gpt-5-mini
+  OPENAI_MODEL_WRITING: gpt-5-mini
+  LOG_LEVEL: info
+  MOCK_CONNECTORS: "false"
+  MOCK_MODEL_PROVIDER: "false"
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: imea-secrets
+  namespace: imea
+type: Opaque
+stringData:
+  DATABASE_MIGRATOR_URL: replace-in-secret-manager
+  DATABASE_API_URL: replace-in-secret-manager
+  DATABASE_WORKER_URL: replace-in-secret-manager
+  DATABASE_PROJECTOR_URL: replace-in-secret-manager
+  JWT_SECRET: replace-in-secret-manager-at-least-32-characters
+  COOKIE_SECRET: replace-in-secret-manager-at-least-32-characters
+  ENCRYPTION_KEY: replace-in-secret-manager-at-least-32-characters
+  TEMPORAL_ADDRESS: temporal-frontend.temporal.svc.cluster.local:7233
+  S3_ENDPOINT: https://s3.example.com
+  S3_ACCESS_KEY: replace-in-secret-manager
+  S3_SECRET_KEY: replace-in-secret-manager
+  OPENAI_API_KEY: replace-in-secret-manager
+  TAVILY_API_KEY: replace-in-secret-manager
+  OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector.observability.svc.cluster.local:4318
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: imea-migrate
+  namespace: imea
+spec:
+  backoffLimit: 3
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: migrate
+          image: ghcr.io/your-org/imea-api:1.0.0
+          command: ["pnpm", "--filter", "@imea/database", "db:migrate"]
+          envFrom:
+            - configMapRef: { name: imea-config }
+            - secretRef: { name: imea-secrets }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: imea-api
+  namespace: imea
+spec:
+  replicas: 2
+  selector: { matchLabels: { app: imea-api } }
+  template:
+    metadata: { labels: { app: imea-api } }
+    spec:
+      containers:
+        - name: api
+          image: ghcr.io/your-org/imea-api:1.0.0
+          ports: [{ name: http, containerPort: 4000 }]
+          envFrom:
+            - configMapRef: { name: imea-config }
+            - secretRef: { name: imea-secrets }
+          readinessProbe: { httpGet: { path: /ready, port: http }, initialDelaySeconds: 10, periodSeconds: 10 }
+          livenessProbe: { httpGet: { path: /health, port: http }, initialDelaySeconds: 20, periodSeconds: 20 }
+          resources:
+            requests: { cpu: 250m, memory: 512Mi }
+            limits: { cpu: "1", memory: 1Gi }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: imea-api
+  namespace: imea
+spec:
+  selector: { app: imea-api }
+  ports: [{ name: http, port: 4000, targetPort: http }]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: imea-worker
+  namespace: imea
+spec:
+  replicas: 2
+  selector: { matchLabels: { app: imea-worker } }
+  template:
+    metadata: { labels: { app: imea-worker } }
+    spec:
+      terminationGracePeriodSeconds: 60
+      containers:
+        - name: worker
+          image: ghcr.io/your-org/imea-worker:1.0.0
+          envFrom:
+            - configMapRef: { name: imea-config }
+            - secretRef: { name: imea-secrets }
+          resources:
+            requests: { cpu: 500m, memory: 1Gi }
+            limits: { cpu: "2", memory: 2Gi }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: imea-projector
+  namespace: imea
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: imea-projector } }
+  template:
+    metadata: { labels: { app: imea-projector } }
+    spec:
+      containers:
+        - name: projector
+          image: ghcr.io/your-org/imea-projector:1.0.0
+          envFrom:
+            - configMapRef: { name: imea-config }
+            - secretRef: { name: imea-secrets }
+          resources:
+            requests: { cpu: 200m, memory: 256Mi }
+            limits: { cpu: "1", memory: 512Mi }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: imea-web
+  namespace: imea
+spec:
+  replicas: 2
+  selector: { matchLabels: { app: imea-web } }
+  template:
+    metadata: { labels: { app: imea-web } }
+    spec:
+      containers:
+        - name: web
+          image: ghcr.io/your-org/imea-web:1.0.0
+          ports: [{ name: http, containerPort: 3000 }]
+          envFrom:
+            - configMapRef: { name: imea-config }
+            - secretRef: { name: imea-secrets }
+          env:
+            - name: NEXT_PUBLIC_API_BASE_URL
+              value: https://market-entry-api.example.com
+          readinessProbe: { httpGet: { path: /login, port: http }, initialDelaySeconds: 10, periodSeconds: 10 }
+          resources:
+            requests: { cpu: 200m, memory: 256Mi }
+            limits: { cpu: "1", memory: 512Mi }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: imea-web
+  namespace: imea
+spec:
+  selector: { app: imea-web }
+  ports: [{ name: http, port: 3000, targetPort: http }]

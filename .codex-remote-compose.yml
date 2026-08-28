@@ -1,0 +1,20 @@
+services:
+  postgres:
+    ports: !override
+      - "127.0.0.1:5432:5432"
+  temporal:
+    ports: !override
+      - "127.0.0.1:7233:7233"
+  temporal-ui:
+    ports: !override
+      - "127.0.0.1:8080:8080"
+  minio:
+    ports: !override
+      - "127.0.0.1:9000:9000"
+      - "127.0.0.1:9001:9001"
+  api:
+    ports: !override
+      - "127.0.0.1:4000:4000"
+  web:
+    ports: !override
+      - "127.0.0.1:3000:3000"

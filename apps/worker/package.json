@@ -1,0 +1,21 @@
+{
+  "name": "@imea/worker",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": { "build": "tsc -p tsconfig.json", "dev": "tsx watch src/main.ts", "start": "node dist/main.js", "lint": "eslint src", "typecheck": "tsc -p tsconfig.json --noEmit", "test": "vitest run --passWithNoTests", "test:workflow": "vitest run -c vitest.workflow.config.ts" },
+  "dependencies": {
+    "@imea/agents": "workspace:*",
+    "@imea/config": "workspace:*",
+    "@imea/connectors": "workspace:*",
+    "@imea/contracts": "workspace:*",
+    "@imea/database": "workspace:*",
+    "@imea/domain": "workspace:*",
+    "@imea/observability": "workspace:*",
+    "@imea/policies": "workspace:*",
+    "@imea/workflows": "workspace:*",
+    "@temporalio/common": "^1.13.2",
+    "@temporalio/worker": "^1.13.2",
+    "drizzle-orm": "^0.44.5"
+  }
+}

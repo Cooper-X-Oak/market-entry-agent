@@ -1,0 +1,15 @@
+node_modules/
+.turbo/
+dist/
+.next/
+coverage/
+.env
+.env.local
+*.log
+minio-data/
+postgres-data/
+playwright-report/
+test-results/
+.worktrees/
+.codex-transfer.tar.gz
+*.tsbuildinfo

@@ -1,0 +1,10 @@
+{
+  "name": "@imea/workflows",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "exports": { ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js", "default": "./dist/index.js" }, "./workflow-entry": { "types": "./dist/workflow-entry.d.ts", "import": "./dist/workflow-entry.js", "default": "./dist/workflow-entry.js" } },
+  "scripts": { "build": "tsc -p tsconfig.json", "lint": "eslint src", "typecheck": "tsc -p tsconfig.json --noEmit", "test": "vitest run", "test:workflow": "vitest run -c vitest.workflow.config.ts" },
+  "dependencies": { "@imea/contracts": "workspace:*", "@temporalio/client": "^1.13.2", "@temporalio/common": "^1.13.2", "@temporalio/workflow": "^1.13.2" },
+  "devDependencies": { "@temporalio/testing": "^1.13.2", "@temporalio/worker": "^1.13.2" }
+}

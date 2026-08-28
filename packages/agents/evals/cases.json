@@ -1,0 +1,20 @@
+[
+  {
+    "key": "industrial-valves-germany",
+    "input": { "company": "NovaFlow Industrial Co", "product": "Industrial valves", "targetCountry": "DE", "targetIndustries": ["Chemical Processing", "Water Treatment"] },
+    "fixtures": { "website": "fixtures/valves-de/website.html", "search": "fixtures/valves-de/search.json" },
+    "expected": { "routeTypes": ["channel", "epc", "direct_purchase"], "entityTypes": ["organization", "project", "association"], "contactTypes": ["role_email", "supplier_registration"], "actionCardFields": ["objective", "contactReason", "timingReason", "stakeholderInterest", "valueHypothesis", "emailSubject", "emailBody", "followUpPlan", "successSignals"] }
+  },
+  {
+    "key": "industrial-sensors-indonesia",
+    "input": { "company": "SignalWorks", "product": "Industrial sensors", "targetCountry": "ID", "targetIndustries": ["Mining", "Food Processing"] },
+    "fixtures": { "website": "fixtures/sensors-id/website.html", "search": "fixtures/sensors-id/search.json" },
+    "expected": { "routeTypes": ["channel", "epc", "exhibition"], "entityTypes": ["organization", "exhibition"], "contactTypes": ["role_email", "contact_form"], "actionCardFields": ["objective", "contactReason", "stakeholderInterest", "valueHypothesis", "emailBody", "followUpPlan"] }
+  },
+  {
+    "key": "appliance-components-mexico",
+    "input": { "company": "HomeCore Parts", "product": "Appliance components", "targetCountry": "MX", "targetIndustries": ["Home Appliances"] },
+    "fixtures": { "website": "fixtures/appliance-mx/website.html", "search": "fixtures/appliance-mx/search.json" },
+    "expected": { "routeTypes": ["direct_purchase", "channel", "association"], "entityTypes": ["organization", "association"], "contactTypes": ["supplier_registration", "role_email"], "actionCardFields": ["objective", "contactReason", "timingReason", "valueHypothesis", "emailSubject", "emailBody", "followUpPlan"] }
+  }
+]

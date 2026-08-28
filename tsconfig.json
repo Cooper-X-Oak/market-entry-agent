@@ -1,0 +1,18 @@
+{
+  "files": [],
+  "references": [
+    { "path": "packages/contracts" },
+    { "path": "packages/domain" },
+    { "path": "packages/config" },
+    { "path": "packages/evidence" },
+    { "path": "packages/policies" },
+    { "path": "packages/connectors" },
+    { "path": "packages/database" },
+    { "path": "packages/agents" },
+    { "path": "packages/workflows" },
+    { "path": "packages/observability" },
+    { "path": "apps/api" },
+    { "path": "apps/worker" },
+    { "path": "apps/projector" }
+  ]
+}

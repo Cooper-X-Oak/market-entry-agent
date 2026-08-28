@@ -1,0 +1,12 @@
+{
+  "version": "7",
+  "dialect": "postgresql",
+  "entries": [
+    { "idx": 0, "version": "7", "when": 1787875200000, "tag": "0000_initial", "breakpoints": false },
+    { "idx": 1, "version": "7", "when": 1787875201000, "tag": "0001_rls", "breakpoints": false },
+    { "idx": 2, "version": "7", "when": 1787875202000, "tag": "0002_service_roles_and_rls", "breakpoints": false },
+    { "idx": 3, "version": "7", "when": 1787875203000, "tag": "0003_contact_evidence_chain", "breakpoints": false },
+    { "idx": 4, "version": "7", "when": 1787875204000, "tag": "0004_domain_event_projection", "breakpoints": false },
+    { "idx": 5, "version": "7", "when": 1787875205000, "tag": "0005_interaction_feedback", "breakpoints": false }
+  ]
+}
