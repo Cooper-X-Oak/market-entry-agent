@@ -1,5 +1,6 @@
 import { condition, continueAsNew, defineQuery, defineSignal, proxyActivities, setHandler, workflowInfo } from '@temporalio/workflow';
 import type {
+  ActionCardVersionCreatedSignal,
   ActionCardDecisionSignal, InteractionRecordedSignal, ManualResearchRequestedSignal,
   OpportunityBudgetUpdatedSignal, OpportunityPauseRequestedSignal, OpportunityResumeRequestedSignal,
   OpportunityWorkflowState, PriorityChangedSignal,
@@ -18,9 +19,10 @@ function isBudgetFailure(error: unknown): boolean {
   return false;
 }
 
-const activities = proxyActivities<MarketEntryActivities>({ startToCloseTimeout: '5 minutes', retry: { maximumAttempts: 5, initialInterval: '2 seconds', backoffCoefficient: 2, maximumInterval: '1 minute' } });
+const activities = proxyActivities<MarketEntryActivities>({ startToCloseTimeout: '5 minutes', heartbeatTimeout: '15 seconds', retry: { maximumAttempts: 1 } });
 
 export const actionCardDecision = defineSignal<[ActionCardDecisionSignal]>('actionCardDecision');
+export const actionCardVersionCreated = defineSignal<[ActionCardVersionCreatedSignal]>('actionCardVersionCreated');
 export const interactionRecorded = defineSignal<[InteractionRecordedSignal]>('interactionRecorded');
 export const manualResearchRequested = defineSignal<[ManualResearchRequestedSignal]>('manualResearchRequested');
 export const opportunityPauseRequested = defineSignal<[OpportunityPauseRequestedSignal]>('opportunityPauseRequested');
@@ -47,6 +49,7 @@ export async function opportunityWorkflow(input: OpportunityWorkflowInput): Prom
   setHandler(getPendingUnknowns, () => state.pendingUnknowns);
   setHandler(getCurrentScore, () => state.currentScore);
   setHandler(actionCardDecision, (signal) => { decisionQueue.push(signal); signalReceived(); });
+  setHandler(actionCardVersionCreated, (signal) => { state.currentActionCardId = signal.actionCardId; state.currentActionCardVersionNo = signal.versionNo; signalReceived(); });
   setHandler(interactionRecorded, (signal) => { if (!state.pendingInteractionIds.includes(signal.interactionId) && !state.processedInteractionIds.includes(signal.interactionId)) state.pendingInteractionIds.push(signal.interactionId); signalReceived(); });
   setHandler(manualResearchRequested, (signal) => { if (!state.pendingResearchRequests.some((request) => request.requestId === signal.requestId)) state.pendingResearchRequests.push({ requestId: signal.requestId, ...(signal.focus ? { focus: signal.focus } : {}) }); signalReceived(); });
   setHandler(opportunityPauseRequested, () => { state.paused = true; signalReceived(); });
@@ -85,13 +88,14 @@ export async function opportunityWorkflow(input: OpportunityWorkflowInput): Prom
     state.status = 'stakeholder_mapped';
     await report('stakeholder_mapped');
     const contactPointIds = await run('findContactPaths', () => activities.findContactPaths(scope('findContactPaths')));
-    state.status = 'contact_path_found';
+    state.status = contactPointIds.length > 0 ? 'contact_path_found' : 'stakeholder_mapped';
     await Promise.all(contactPointIds.map((contactPointId) => run(`verifyContactPoint:${contactPointId}`, () => activities.verifyContactPoint({ ...scope('verifyContactPoint', contactPointId, { contactPointId }), contactPointId }))));
-    state.status = 'contact_path_verified';
-    await report('contact_path_verified');
+    const contactPath = await activities.evaluateContactPath(scope('evaluateContactPath'));
+    state.status = contactPath.verified ? 'contact_path_verified' : state.status;
+    await report(contactPath.verified ? 'contact_path_verified' : 'contact_research_required');
     const qualification = await run('qualifyOpportunity', () => activities.qualifyOpportunity(scope('qualifyOpportunity')));
     state.currentScore = qualification.score;
-    state.pendingUnknowns = qualification.unknowns;
+    state.pendingUnknowns = contactPath.verified ? qualification.unknowns : [...new Set(['No verified public contact path', ...qualification.unknowns])];
     const card = await run('buildActionCard', () => activities.buildActionCard(scope('buildActionCard')));
     state.currentActionCardId = card.actionCardId;
     state.currentActionCardVersionNo = card.versionNo;

@@ -1,9 +1,11 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { Inject, Injectable } from '@nestjs/common';
+import { Inject, Injectable, type MessageEvent } from '@nestjs/common';
 import { and, desc, eq, inArray, sql } from 'drizzle-orm';
 import type { CreateMissionRequest, UpdateMissionRequest } from '@imea/contracts';
-import { DocumentConnector, type ObjectStorageConnector } from '@imea/connectors';
+import { getEnvironment } from '@imea/config';
+import { BrowserConnector, DocumentConnector, type ObjectStorageConnector } from '@imea/connectors';
 import {
+  actionCardEvidenceLinks,
   actionCards,
   approvals,
   artifacts,
@@ -30,7 +32,11 @@ import {
   sourceSnapshots,
   sources,
   stakeholderRoles,
+  routeEvidenceLinks,
+  targetAssessmentEvidenceLinks,
+  targetAssessments,
   users,
+  workflowInstances,
   type Database,
   type DatabaseTransaction,
   type TransactionManager,
@@ -38,6 +44,7 @@ import {
 import { actionCardTransitions, assertTransition, contactTransitions, DomainError, missionStageTransitions, opportunityTransitions } from '@imea/domain';
 import { requirePermission } from '@imea/policies';
 import type { TemporalGateway } from '@imea/workflows';
+import { from, switchMap, type Observable } from 'rxjs';
 import type { AuthContext } from '../common/auth-context.js';
 import { EventStreamService } from '../common/event-stream.service.js';
 import { DATABASE, OBJECT_STORAGE, TEMPORAL_GATEWAY, TRANSACTION_MANAGER } from '../tokens.js';
@@ -56,6 +63,7 @@ export class MarketService {
   private readonly missionRepository: MissionRepository;
   private readonly queries: MissionQueryRepository;
   private readonly eventWriter = new DomainEventWriter();
+  private readonly executionMode = getEnvironment().MOCK_CONNECTORS || getEnvironment().MOCK_MODEL_PROVIDER ? 'fixture' as const : 'live' as const;
 
   constructor(
     @Inject(DATABASE) private readonly db: Database,
@@ -98,7 +106,7 @@ export class MarketService {
     requirePermission(auth.role, 'mission:write');
     const id = crypto.randomUUID();
     return this.mutate(auth, { aggregateType: 'mission', aggregateId: id, eventType: 'mission.created.v1', missionId: id }, async (tx) => {
-      const [mission] = await tx.insert(missions).values({ id, tenantId: auth.tenantId, createdBy: auth.userId, name: input.name, companyName: input.companyName, companyWebsite: input.companyWebsite, productScope: input.productScope, targetCountries: input.targetCountries, targetIndustries: input.targetIndustries, targetProfiles: input.targetProfiles, objective: input.objective, successDefinition: input.successDefinition, outputLanguages: input.outputLanguages, budgetConfig: input.budgetConfig }).returning();
+      const [mission] = await tx.insert(missions).values({ id, tenantId: auth.tenantId, createdBy: auth.userId, name: input.name, companyName: input.companyName, companyWebsite: input.companyWebsite, researchDefinition: input.researchDefinition, productScope: input.productScope, targetCountries: input.targetCountries, targetIndustries: input.targetIndustries, targetProfiles: input.targetProfiles, objective: input.objective, successDefinition: input.successDefinition, outputLanguages: input.outputLanguages, budgetConfig: input.budgetConfig, executionMode: this.executionMode }).returning();
       if (!mission) throw new Error('Mission insert returned no row');
       return mission;
     });
@@ -116,7 +124,7 @@ export class MarketService {
   async updateMission(auth: AuthContext, missionId: string, input: UpdateMissionRequest) {
     requirePermission(auth.role, 'mission:write');
     const before = await this.mission(auth, missionId);
-    if (before.status !== 'draft' && input.companyWebsite) throw new DomainError({ code: 'MISSION_STAGE_CONFLICT', message: 'Core mission identity can only be changed while draft' });
+    if (before.status !== 'draft' && (input.companyWebsite !== undefined || input.companyName !== undefined || input.researchDefinition !== undefined || input.productScope !== undefined || input.targetCountries !== undefined || input.targetProfiles !== undefined || input.targetIndustries !== undefined || input.objective !== undefined || input.successDefinition !== undefined)) throw new DomainError({ code: 'MISSION_STAGE_CONFLICT', message: 'Core mission identity can only be changed while draft' });
     const updated = await this.mutate(auth, { aggregateType: 'mission', aggregateId: missionId, eventType: 'mission.updated.v1', missionId, before }, async (tx) => {
       const mission = await this.missionRepository.update(tx, auth.tenantId, missionId, input);
       if (input.budgetConfig && before.currentStage === 'awaiting_budget_review') return (await tx.update(missions).set({ currentStage: 'active', status: 'running', updatedAt: new Date() }).where(and(eq(missions.tenantId, auth.tenantId), eq(missions.id, missionId))).returning())[0] ?? mission;
@@ -128,10 +136,14 @@ export class MarketService {
 
   async startMission(auth: AuthContext, missionId: string) {
     requirePermission(auth.role, 'mission:write');
-    const current = await this.mission(auth, missionId);
-    assertTransition('mission', missionStageTransitions, current.currentStage, 'compiling');
-    const workflowId = await this.temporal.startMission(auth.tenantId, missionId);
-    return this.mutate(auth, { aggregateType: 'mission', aggregateId: missionId, eventType: 'mission.started.v1', missionId, before: current }, async (tx) => {
+    return this.mutate(auth, { aggregateType: 'mission', aggregateId: missionId, eventType: 'mission.started.v1', missionId }, async (tx) => {
+      await tx.execute(sql`select id from missions where id=${missionId} and tenant_id=${auth.tenantId} for update`);
+      const [current] = await tx.select().from(missions).where(and(eq(missions.id, missionId), eq(missions.tenantId, auth.tenantId)));
+      if (!current) throw new DomainError({ code: 'MISSION_NOT_FOUND', message: 'Mission not found' });
+      assertTransition('mission', missionStageTransitions, current.currentStage, 'compiling');
+      const workflowId = await this.temporal.startMission(auth.tenantId, missionId);
+      const execution = await this.temporal.describeMission(auth.tenantId, missionId);
+      await tx.insert(workflowInstances).values({ tenantId: auth.tenantId, missionId, workflowType: 'mission', workflowId, runId: execution.runId, status: 'running' }).onConflictDoUpdate({ target: workflowInstances.workflowId, set: { runId: execution.runId, status: 'running', closedAt: null, updatedAt: new Date() } });
       const [updated] = await tx.update(missions).set({ status: 'running', currentStage: 'compiling', workflowId, updatedAt: new Date() }).where(and(eq(missions.tenantId, auth.tenantId), eq(missions.id, missionId))).returning();
       return updated;
     });
@@ -139,22 +151,32 @@ export class MarketService {
 
   async pauseMission(auth: AuthContext, missionId: string) {
     requirePermission(auth.role, 'mission:write');
+    const current = await this.mission(auth, missionId);
+    if (!current.workflowId || current.status !== 'running') throw new DomainError({ code: 'MISSION_STAGE_CONFLICT', message: 'Only a running Mission with an active Workflow can be paused' });
     await this.temporal.signalMission(auth.tenantId, missionId, 'missionPauseRequested', { requestedByUserId: auth.userId });
-    return this.mutate(auth, { aggregateType: 'mission', aggregateId: missionId, eventType: 'mission.paused.v1', missionId }, async (tx) => (await tx.update(missions).set({ status: 'paused', updatedAt: new Date() }).where(and(eq(missions.tenantId, auth.tenantId), eq(missions.id, missionId))).returning())[0]);
+    return this.mutate(auth, { aggregateType: 'mission', aggregateId: missionId, eventType: 'mission.paused.v1', missionId, before: current }, async (tx) => (await tx.update(missions).set({ status: 'paused', updatedAt: new Date() }).where(and(eq(missions.tenantId, auth.tenantId), eq(missions.id, missionId))).returning())[0]);
   }
 
   async resumeMission(auth: AuthContext, missionId: string) {
     requirePermission(auth.role, 'mission:write');
+    const current = await this.mission(auth, missionId);
+    if (!current.workflowId || current.status !== 'paused') throw new DomainError({ code: 'MISSION_STAGE_CONFLICT', message: 'Only a paused Mission with an active Workflow can be resumed' });
     await this.temporal.signalMission(auth.tenantId, missionId, 'missionResumeRequested', { requestedByUserId: auth.userId });
-    return this.mutate(auth, { aggregateType: 'mission', aggregateId: missionId, eventType: 'mission.resumed.v1', missionId }, async (tx) => (await tx.update(missions).set({ status: 'running', updatedAt: new Date() }).where(and(eq(missions.tenantId, auth.tenantId), eq(missions.id, missionId))).returning())[0]);
+    return this.mutate(auth, { aggregateType: 'mission', aggregateId: missionId, eventType: 'mission.resumed.v1', missionId, before: current }, async (tx) => (await tx.update(missions).set({ status: 'running', updatedAt: new Date() }).where(and(eq(missions.tenantId, auth.tenantId), eq(missions.id, missionId))).returning())[0]);
   }
 
   async refreshMission(auth: AuthContext, missionId: string) { requirePermission(auth.role, 'mission:write'); const requestId = randomUUID(); await this.temporal.signalMission(auth.tenantId, missionId, 'manualRefreshRequested', { requestId, requestedByUserId: auth.userId }); return { requested: true, requestId }; }
 
   async completeMission(auth: AuthContext, missionId: string) {
     requirePermission(auth.role, 'mission:write');
+    const current = await this.mission(auth, missionId);
+    if (current.status === 'completed') return current;
+    if (!current.workflowId || !['running', 'paused'].includes(current.status)) throw new DomainError({ code: 'MISSION_STAGE_CONFLICT', message: 'Only a started Mission can be completed' });
+    const [approvedCards] = await this.read(auth, (tx) => tx.select({ count: sql<number>`count(*)::int` }).from(actionCards).innerJoin(opportunities, eq(opportunities.id, actionCards.opportunityId)).where(and(eq(opportunities.missionId, missionId), inArray(actionCards.status, ['approved', 'exported', 'executed', 'completed']))));
+    if ((approvedCards?.count ?? 0) < 1) throw new DomainError({ code: 'MISSION_COMPLETION_GATE_FAILED', message: 'Approve at least one Action Card before completing the Mission' });
+    const commandId = randomUUID(); const correlationId = randomUUID();
     await this.temporal.signalMission(auth.tenantId, missionId, 'missionCompletionRequested', { requestedByUserId: auth.userId });
-    return this.mutate(auth, { aggregateType: 'mission', aggregateId: missionId, eventType: 'mission.completed.v1', missionId }, async (tx) => (await tx.update(missions).set({ status: 'completed', currentStage: 'completed', completedAt: new Date(), updatedAt: new Date() }).where(and(eq(missions.tenantId, auth.tenantId), eq(missions.id, missionId))).returning())[0]);
+    return this.commandReceipt({ commandId, correlationId, aggregateId: missionId, missionId, workflowId: current.workflowId });
   }
 
   async progress(auth: AuthContext, missionId: string) { return this.missionWorkflowProgress(auth, missionId); }
@@ -185,16 +207,69 @@ export class MarketService {
     return { approvedRoutes: routeCount[0]?.count ?? 0, targets: targetCount[0]?.count ?? 0, verifiedContacts: contactCount[0]?.count ?? 0, actionCards: actionCount[0]?.count ?? 0, opportunities: opportunityCount[0]?.count ?? 0 };
   }
 
-  async stream(auth: AuthContext, missionId: string, lastEventId?: string) { requirePermission(auth.role, 'mission:read'); await this.mission(auth, missionId); return this.eventStream.stream(missionId, lastEventId); }
+  async cockpit(auth: AuthContext, missionId: string) {
+    const mission = await this.mission(auth, missionId);
+    const [progress, metrics, sourceRows, targetRows, cardRows] = await Promise.all([
+      this.missionWorkflowProgress(auth, missionId),
+      this.metrics(auth, missionId),
+      this.listSources(auth, missionId),
+      this.targets(auth, missionId),
+      this.actionCards(auth, missionId),
+    ]);
+    const decisionByStage: Record<string, { type: string; title: string; instruction: string; path: string }> = {
+      awaiting_capability_review: { type: 'capability_review', title: '确认企业能力边界', instruction: '处理全部高影响能力声明，并确认至少一项有公开证据支持的能力。', path: `/missions/${missionId}/capability-ledger` },
+      awaiting_route_review: { type: 'route_review', title: '批准市场进入路线', instruction: '比较路线证据、难度与资源投入，批准至少一条路线。', path: `/missions/${missionId}/market-routes` },
+      awaiting_target_review: { type: 'target_review', title: '选择优先目标', instruction: '从 Top 10 目标中选择 1–3 个进入机会研究。', path: `/missions/${missionId}/targets` },
+      awaiting_action_review: { type: 'action_review', title: '批准首张行动卡', instruction: '核对目标、证据、已知信息与下一步动作，批准至少一张 Action Card。', path: `/missions/${missionId}/action-queue` },
+    };
+    const approvedActionCardCount = cardRows.filter((row) => ['approved', 'exported', 'executed', 'completed'].includes(row.actionCard.status)).length;
+    return {
+      mission,
+      executionMode: mission.executionMode,
+      progress,
+      currentDecision: decisionByStage[mission.currentStage] ?? null,
+      counts: { sources: sourceRows.length, candidateTargets: targetRows.length, selectedTargets: targetRows.filter((row) => row.mission.targetStatus === 'high_priority').length, approvedActionCards: approvedActionCardCount, ...metrics },
+      businessChain: [
+        { key: 'mission', label: 'Mission', ready: mission.status !== 'draft' },
+        { key: 'evidence', label: 'Evidence', ready: sourceRows.length > 0 },
+        { key: 'route', label: 'Route', ready: metrics.approvedRoutes > 0 },
+        { key: 'target', label: 'Target', ready: targetRows.some((row) => row.mission.targetStatus === 'high_priority') },
+        { key: 'contact', label: 'Contact', ready: metrics.verifiedContacts > 0, optional: true },
+        { key: 'opportunity', label: 'Opportunity', ready: metrics.opportunities > 0 },
+        { key: 'action_card', label: 'Action Card', ready: approvedActionCardCount > 0 },
+      ],
+    };
+  }
+
+  stream(auth: AuthContext, missionId: string, lastEventId?: string): Observable<MessageEvent> {
+    requirePermission(auth.role, 'mission:read');
+    return from(this.mission(auth, missionId)).pipe(switchMap(() => this.eventStream.stream(missionId, lastEventId)));
+  }
 
   async addSourceUrl(auth: AuthContext, missionId: string, input: { url: string; sourceKind?: 'website' | 'manual_url' }) {
     requirePermission(auth.role, 'mission:write');
     await this.mission(auth, missionId);
-    const id = crypto.randomUUID();
-    return this.mutate(auth, { aggregateType: 'source', aggregateId: id, eventType: 'source.added.v1', missionId }, async (tx) => {
-      await tx.insert(missionSources).values({ id, tenantId: auth.tenantId, missionId, sourceKind: input.sourceKind ?? 'manual_url', url: input.url, uploadedBy: auth.userId });
-      const [source] = await tx.insert(sources).values({ tenantId: auth.tenantId, missionId, sourceType: input.sourceKind === 'website' ? 'company_website' : 'search_result', url: input.url, normalizedUrl: new URL(input.url).toString() }).onConflictDoUpdate({ target: [sources.tenantId, sources.missionId, sources.normalizedUrl], set: { lastFetchedAt: new Date(), status: 'active' } }).returning();
-      return source;
+    const normalizedUrl = new URL(input.url).toString();
+    if (!['http:', 'https:'].includes(new URL(normalizedUrl).protocol)) throw new DomainError({ code: 'SOURCE_URL_INVALID', message: 'Source URL must use HTTP or HTTPS' });
+    const connector = new BrowserConnector(this.storage);
+    const result = await connector.execute({ tenantId: auth.tenantId, missionId, operation: 'fetch_page', url: normalizedUrl });
+    const item = result.items[0];
+    const extractedText = item?.content ?? '';
+    const suppliedHash = item?.metadata.contentHash;
+    const contentHash = typeof suppliedHash === 'string' ? suppliedHash : createHash('sha256').update(extractedText).digest('hex');
+    const stored = result.rawObjectKey ? { objectKey: result.rawObjectKey, contentHash } : await this.storage.put(auth.tenantId, missionId, 'web', extractedText, 'text/plain');
+    const candidateSourceId = randomUUID();
+    const [existing] = await this.read(auth, (tx) => tx.select({ id: sources.id }).from(sources).where(and(eq(sources.tenantId, auth.tenantId), eq(sources.missionId, missionId), eq(sources.normalizedUrl, normalizedUrl))).limit(1));
+    const sourceId = existing?.id ?? candidateSourceId;
+    return this.mutate(auth, { aggregateType: 'source', aggregateId: sourceId, eventType: 'source.added.v1', missionId }, async (tx) => {
+      await tx.insert(missionSources).values({ tenantId: auth.tenantId, missionId, sourceKind: input.sourceKind ?? 'manual_url', url: normalizedUrl, uploadedBy: auth.userId });
+      const [source] = await tx.insert(sources).values({ id: sourceId, tenantId: auth.tenantId, missionId, sourceType: input.sourceKind === 'website' ? 'company_website' : 'search_result', url: normalizedUrl, normalizedUrl, title: item?.title, metadata: { connector: connector.type }, status: 'active' }).onConflictDoUpdate({ target: [sources.tenantId, sources.missionId, sources.normalizedUrl], set: { title: item?.title, lastFetchedAt: new Date(), status: 'active' } }).returning();
+      if (!source) throw new Error('URL Source insert returned no row');
+      const [inserted] = await tx.insert(sourceSnapshots).values({ sourceId: source.id, httpStatus: Number(item?.metadata.httpStatus ?? 200), contentHash: stored.contentHash, objectKey: stored.objectKey, extractedText, extractionMetadata: { connector: connector.type } }).onConflictDoNothing().returning();
+      const snapshot = inserted ?? (await tx.select().from(sourceSnapshots).where(and(eq(sourceSnapshots.sourceId, source.id), eq(sourceSnapshots.contentHash, stored.contentHash))).limit(1))[0];
+      if (!snapshot) throw new Error('URL Source Snapshot insert returned no row');
+      const [updated] = await tx.update(sources).set({ latestSnapshotId: snapshot.id, lastFetchedAt: new Date() }).where(eq(sources.id, source.id)).returning();
+      return { ...updated, snapshotId: snapshot.id, contentHash: snapshot.contentHash };
     });
   }
 
@@ -224,7 +299,13 @@ export class MarketService {
   async source(auth: AuthContext, missionId: string, sourceId: string) { await this.mission(auth, missionId); const [source] = await this.read(auth, (tx) => tx.select().from(sources).where(and(eq(sources.tenantId, auth.tenantId), eq(sources.missionId, missionId), eq(sources.id, sourceId))).limit(1)); if (!source) throw new DomainError({ code: 'SOURCE_NOT_FOUND', message: 'Source not found' }); return source; }
   async snapshots(auth: AuthContext, missionId: string, sourceId: string) { await this.source(auth, missionId, sourceId); return this.read(auth, (tx) => tx.select().from(sourceSnapshots).where(eq(sourceSnapshots.sourceId, sourceId)).orderBy(desc(sourceSnapshots.fetchedAt))); }
 
-  capabilities(auth: AuthContext, missionId: string) { requirePermission(auth.role, 'mission:read'); return this.queries.capabilities(auth.tenantId, missionId); }
+  async capabilities(auth: AuthContext, missionId: string) {
+    requirePermission(auth.role, 'mission:read');
+    const claimRows = await this.queries.capabilities(auth.tenantId, missionId);
+    if (claimRows.length === 0) return [];
+    const evidenceRows = await this.read(auth, (tx) => tx.select({ link: claimEvidenceLinks, evidence: evidenceItems, snapshot: sourceSnapshots, source: sources }).from(claimEvidenceLinks).innerJoin(evidenceItems, eq(evidenceItems.id, claimEvidenceLinks.evidenceItemId)).innerJoin(sourceSnapshots, eq(sourceSnapshots.id, evidenceItems.sourceSnapshotId)).innerJoin(sources, eq(sources.id, sourceSnapshots.sourceId)).where(and(eq(evidenceItems.tenantId, auth.tenantId), eq(evidenceItems.missionId, missionId), inArray(claimEvidenceLinks.claimId, claimRows.map((claim) => claim.id)))));
+    return claimRows.map((claim) => ({ ...claim, evidence: evidenceRows.filter((row) => row.link.claimId === claim.id).map((row) => ({ evidenceId: row.evidence.id, stance: row.evidence.stance, excerpt: row.evidence.excerpt, locator: row.evidence.locator, sourceTitle: row.source.title, sourceUrl: row.source.url, fetchedAt: row.snapshot.fetchedAt.toISOString(), contentHash: row.snapshot.contentHash })) }));
+  }
   async updateCapability(auth: AuthContext, missionId: string, claimId: string, input: Partial<typeof claims.$inferInsert>) {
     requirePermission(auth.role, 'mission:write');
     return this.mutate(auth, { aggregateType: 'claim', aggregateId: claimId, eventType: 'claim.updated.v1', missionId }, async (tx) => {
@@ -237,7 +318,25 @@ export class MarketService {
   contradictCapability(auth: AuthContext, missionId: string, claimId: string) { return this.updateCapability(auth, missionId, claimId, { status: 'contradicted' }); }
   async researchCapabilities(auth: AuthContext, missionId: string) { requirePermission(auth.role, 'mission:write'); const mission = await this.mission(auth, missionId); if (!mission.workflowId) throw new DomainError({ code: 'MISSION_WORKFLOW_UNAVAILABLE', message: 'Start the Mission before requesting capability research' }); const requestId = randomUUID(); await this.temporal.signalMission(auth.tenantId, missionId, 'capabilityResearchRequested', { requestId, requestedByUserId: auth.userId }); return { requested: true, requestId, scope: 'capabilities' }; }
 
-  routes(auth: AuthContext, missionId: string) { requirePermission(auth.role, 'mission:read'); return this.queries.routes(auth.tenantId, missionId); }
+  async completeCapabilityReview(auth: AuthContext, missionId: string, input: { resolvedClaimIds: string[]; comment?: string }) {
+    requirePermission(auth.role, 'mission:write');
+    const mission = await this.mission(auth, missionId);
+    if (mission.currentStage !== 'awaiting_capability_review' || !mission.workflowId) throw new DomainError({ code: 'MISSION_STAGE_CONFLICT', message: 'Capability review is available while the Mission awaits capability review' });
+    const highImpact = (await this.capabilities(auth, missionId)).filter((claim) => claim.impactLevel === 'high');
+    const reviewed = new Set(input.resolvedClaimIds);
+    if (highImpact.length === 0 || highImpact.some((claim) => !reviewed.has(claim.id) || !['user_confirmed', 'contradicted', 'unknown'].includes(claim.status)) || !highImpact.some((claim) => claim.status === 'user_confirmed' && claim.evidence.length > 0) || highImpact.some((claim) => ['user_confirmed', 'contradicted'].includes(claim.status) && claim.evidence.length === 0)) throw new DomainError({ code: 'CAPABILITY_REVIEW_GATE_FAILED', message: 'Resolve every high-impact capability and confirm at least one evidence-backed capability' });
+    const commandId = randomUUID(); const correlationId = randomUUID();
+    await this.temporal.signalMission(auth.tenantId, missionId, 'capabilityReviewSubmitted', { resolvedClaimIds: input.resolvedClaimIds, decidedByUserId: auth.userId, ...(input.comment ? { comment: input.comment } : {}), commandId });
+    return this.commandReceipt({ commandId, correlationId, aggregateId: missionId, missionId, workflowId: mission.workflowId });
+  }
+
+  async routes(auth: AuthContext, missionId: string) {
+    requirePermission(auth.role, 'mission:read');
+    const routeRows = await this.queries.routes(auth.tenantId, missionId);
+    if (routeRows.length === 0) return [];
+    const evidenceRows = await this.read(auth, (tx) => tx.select({ link: routeEvidenceLinks, evidence: evidenceItems, snapshot: sourceSnapshots, source: sources }).from(routeEvidenceLinks).innerJoin(evidenceItems, eq(evidenceItems.id, routeEvidenceLinks.evidenceItemId)).innerJoin(sourceSnapshots, eq(sourceSnapshots.id, evidenceItems.sourceSnapshotId)).innerJoin(sources, eq(sources.id, sourceSnapshots.sourceId)).where(and(eq(routeEvidenceLinks.tenantId, auth.tenantId), eq(routeEvidenceLinks.missionId, missionId), inArray(routeEvidenceLinks.routeId, routeRows.map((route) => route.id)))));
+    return routeRows.map((route) => ({ ...route, supportingEvidence: evidenceRows.filter((row) => row.link.routeId === route.id && row.link.stance === 'support').map((row) => ({ evidenceId: row.evidence.id, excerpt: row.evidence.excerpt, locator: row.evidence.locator, sourceTitle: row.source.title, sourceUrl: row.source.url, fetchedAt: row.snapshot.fetchedAt.toISOString(), contentHash: row.snapshot.contentHash })), counterEvidence: evidenceRows.filter((row) => row.link.routeId === route.id && row.link.stance === 'oppose').map((row) => ({ evidenceId: row.evidence.id, excerpt: row.evidence.excerpt, locator: row.evidence.locator, sourceTitle: row.source.title, sourceUrl: row.source.url, fetchedAt: row.snapshot.fetchedAt.toISOString(), contentHash: row.snapshot.contentHash })) }));
+  }
   async route(auth: AuthContext, missionId: string, routeId: string) { const [route] = await this.read(auth, (tx) => tx.select().from(marketRoutes).where(and(eq(marketRoutes.tenantId, auth.tenantId), eq(marketRoutes.missionId, missionId), eq(marketRoutes.id, routeId))).limit(1)); if (!route) throw new DomainError({ code: 'ROUTE_NOT_FOUND', message: 'Route not found' }); return route; }
   async updateRoute(auth: AuthContext, missionId: string, routeId: string, input: Partial<typeof marketRoutes.$inferInsert>) { requirePermission(auth.role, 'mission:write'); return this.mutate(auth, { aggregateType: 'market_route', aggregateId: routeId, eventType: 'market_route.updated.v1', missionId }, async (tx) => { const [route] = await tx.update(marketRoutes).set({ ...input, updatedAt: new Date() }).where(and(eq(marketRoutes.tenantId, auth.tenantId), eq(marketRoutes.missionId, missionId), eq(marketRoutes.id, routeId))).returning(); if (!route) throw new DomainError({ code: 'ROUTE_NOT_FOUND', message: 'Route not found' }); return route; }); }
   async approveRoute(auth: AuthContext, missionId: string, routeId: string) { requirePermission(auth.role, 'route:approve'); return this.updateRoute(auth, missionId, routeId, { status: 'approved', decidedByUserId: auth.userId, decidedAt: new Date() }); }
@@ -246,30 +345,20 @@ export class MarketService {
   async completeRouteReview(auth: AuthContext, missionId: string, input: { approvedRouteIds: string[]; acceptedArtifactVersionIds: string[]; comment?: string }) {
     requirePermission(auth.role, 'route:approve');
     const mission = await this.mission(auth, missionId);
+    if (mission.currentStage !== 'awaiting_route_review' || !mission.workflowId) throw new DomainError({ code: 'MISSION_STAGE_CONFLICT', message: 'Route review is available while the Mission awaits route review' });
     const routeRows = await this.routes(auth, missionId);
     const selected = new Set(input.approvedRouteIds);
-    if (selected.size === 0 || input.approvedRouteIds.some((id) => !routeRows.some((route) => route.id === id))) throw new DomainError({ code: 'ROUTE_APPROVAL_REQUIRED', message: 'At least one valid route must be approved' });
+    if (selected.size === 0 || selected.size > 3 || input.approvedRouteIds.some((id) => !routeRows.some((route) => route.id === id))) throw new DomainError({ code: 'ROUTE_APPROVAL_REQUIRED', message: 'Approve 1–3 valid routes from this Mission' });
     const requiredArtifactVersionIds = [...new Set(routeRows.filter((route) => selected.has(route.id)).map((route) => route.artifactVersionId))];
     const acceptedIds = new Set(input.acceptedArtifactVersionIds);
     if (acceptedIds.size !== requiredArtifactVersionIds.length || requiredArtifactVersionIds.some((id) => !acceptedIds.has(id))) throw new DomainError({ code: 'ACCEPTED_ROUTE_ARTIFACT_REQUIRED', message: 'Every approved route must reference its accepted Artifact Version' });
     const acceptedVersions = await this.read(auth, (tx) => tx.select().from(artifactVersions).where(inArray(artifactVersions.id, requiredArtifactVersionIds)));
     if (acceptedVersions.length !== requiredArtifactVersionIds.length) throw new DomainError({ code: 'ACCEPTED_ROUTE_ARTIFACT_REQUIRED', message: 'A selected route Artifact Version was not found' });
+    const selectedRoutes = routeRows.filter((route) => selected.has(route.id));
+    if (selectedRoutes.some((route) => route.supportingEvidence.length < 2 || route.keyEntityTypes.length === 0 || route.keyStakeholderRoles.length === 0 || route.primaryChannels.length === 0)) throw new DomainError({ code: 'ROUTE_APPROVAL_GATE_FAILED', message: 'Every approved route requires two supporting sources plus target entity, stakeholder and channel definitions' });
     const commandId = randomUUID(); const correlationId = randomUUID();
-    await this.transactions.run({ tenantId: auth.tenantId, actor: { type: 'user', id: auth.userId }, correlationId }, async (tx) => {
-      for (const version of acceptedVersions) {
-        await tx.update(artifactVersions).set({ status: 'superseded' }).where(and(eq(artifactVersions.artifactId, version.artifactId), eq(artifactVersions.status, 'accepted')));
-        await tx.update(artifactVersions).set({ status: 'accepted', acceptedByUserId: auth.userId, acceptedAt: new Date() }).where(eq(artifactVersions.id, version.id));
-        await tx.update(artifacts).set({ currentVersionId: version.id, updatedAt: new Date() }).where(and(eq(artifacts.tenantId, auth.tenantId), eq(artifacts.missionId, missionId), eq(artifacts.id, version.artifactId)));
-      }
-      for (const route of routeRows) {
-        const status = selected.has(route.id) ? 'approved' : 'deprioritized';
-        await tx.update(marketRoutes).set({ status, decidedByUserId: auth.userId, decidedAt: new Date(), updatedAt: new Date() }).where(and(eq(marketRoutes.tenantId, auth.tenantId), eq(marketRoutes.missionId, missionId), eq(marketRoutes.id, route.id)));
-        if (route.status !== status) await this.eventWriter.append(tx, { tenantId: auth.tenantId, aggregateType: 'market_route', aggregateId: route.id, eventType: status === 'approved' ? 'market_route.approved.v1' : 'market_route.deprioritized.v1', actor: { type: 'user', id: auth.userId }, correlationId, payload: { tenantId: auth.tenantId, missionId, aggregateId: route.id, actor: { type: 'user', id: auth.userId }, before: { status: route.status }, after: { status }, metadata: { comment: input.comment ?? '', acceptedArtifactVersionIds: input.acceptedArtifactVersionIds } } });
-      }
-    });
-    const workflowId = mission.workflowId ?? `mission:${auth.tenantId}:${missionId}`;
-    await this.temporal.signalMission(auth.tenantId, missionId, 'routeReviewSubmitted', { approvedRouteIds: input.approvedRouteIds, decidedByUserId: auth.userId, ...(input.comment ? { comment: input.comment } : {}) });
-    return this.commandReceipt({ commandId, correlationId, aggregateId: missionId, missionId, workflowId });
+    await this.temporal.signalMission(auth.tenantId, missionId, 'routeReviewSubmitted', { approvedRouteIds: input.approvedRouteIds, acceptedArtifactVersionIds: input.acceptedArtifactVersionIds, decidedByUserId: auth.userId, ...(input.comment ? { comment: input.comment } : {}), commandId });
+    return this.commandReceipt({ commandId, correlationId, aggregateId: missionId, missionId, workflowId: mission.workflowId });
   }
 
   entities(auth: AuthContext, missionId: string) { requirePermission(auth.role, 'mission:read'); return this.queries.entities(auth.tenantId, missionId); }
@@ -292,7 +381,23 @@ export class MarketService {
   archiveEntity(auth: AuthContext, missionId: string, entityId: string) { return this.updateTargetStatus(auth, missionId, entityId, 'archived'); }
   async researchEntity(auth: AuthContext, missionId: string, entityId: string) { await this.entity(auth, missionId, entityId); const requestId = randomUUID(); await this.temporal.signalMission(auth.tenantId, missionId, 'manualRefreshRequested', { requestId, requestedByUserId: auth.userId }); return { requested: true, requestId, entityId }; }
 
-  async targets(auth: AuthContext, missionId: string) { return (await this.entities(auth, missionId)).filter((row) => row.mission?.targetStatus !== 'observed'); }
+  async targets(auth: AuthContext, missionId: string) {
+    requirePermission(auth.role, 'mission:read');
+    const rows = await this.read(auth, (tx) => tx.select({ entity: entities, mission: missionEntities, assessment: targetAssessments, route: marketRoutes }).from(targetAssessments).innerJoin(entities, eq(entities.id, targetAssessments.entityId)).innerJoin(missionEntities, and(eq(missionEntities.entityId, targetAssessments.entityId), eq(missionEntities.missionId, targetAssessments.missionId))).innerJoin(marketRoutes, eq(marketRoutes.id, targetAssessments.routeId)).where(and(eq(targetAssessments.tenantId, auth.tenantId), eq(targetAssessments.missionId, missionId), eq(targetAssessments.gatePassed, true), sql`${targetAssessments.rank} <= 10`)).orderBy(targetAssessments.rank));
+    const evidenceRows = rows.length > 0 ? await this.read(auth, (tx) => tx.select({ link: targetAssessmentEvidenceLinks, evidence: evidenceItems, snapshot: sourceSnapshots, source: sources }).from(targetAssessmentEvidenceLinks).innerJoin(evidenceItems, eq(evidenceItems.id, targetAssessmentEvidenceLinks.evidenceItemId)).innerJoin(sourceSnapshots, eq(sourceSnapshots.id, evidenceItems.sourceSnapshotId)).innerJoin(sources, eq(sources.id, sourceSnapshots.sourceId)).where(inArray(targetAssessmentEvidenceLinks.targetAssessmentId, rows.map((row) => row.assessment.id)))) : [];
+    return rows.map((row) => ({ ...row, evidence: evidenceRows.filter((evidence) => evidence.link.targetAssessmentId === row.assessment.id).map((evidence) => ({ evidenceId: evidence.evidence.id, excerpt: evidence.evidence.excerpt, locator: evidence.evidence.locator, sourceTitle: evidence.source.title, sourceUrl: evidence.source.url, fetchedAt: evidence.snapshot.fetchedAt.toISOString(), contentHash: evidence.snapshot.contentHash })) }));
+  }
+  async completeTargetReview(auth: AuthContext, missionId: string, input: { selectedTargetIds: string[]; comment?: string }) {
+    requirePermission(auth.role, 'mission:write');
+    const mission = await this.mission(auth, missionId);
+    if (mission.currentStage !== 'awaiting_target_review' || !mission.workflowId) throw new DomainError({ code: 'MISSION_STAGE_CONFLICT', message: 'Target review is available while the Mission awaits target review' });
+    const candidateRows = await this.targets(auth, missionId);
+    const selected = new Set(input.selectedTargetIds);
+    if (selected.size < 1 || selected.size > 3 || input.selectedTargetIds.some((id) => !candidateRows.some((row) => row.entity.id === id))) throw new DomainError({ code: 'TARGET_SELECTION_REQUIRED', message: 'Select 1–3 targets from the current Top 10 candidate list' });
+    const commandId = randomUUID(); const correlationId = randomUUID();
+    await this.temporal.signalMission(auth.tenantId, missionId, 'targetReviewSubmitted', { selectedTargetIds: input.selectedTargetIds, decidedByUserId: auth.userId, ...(input.comment ? { comment: input.comment } : {}), commandId });
+    return this.commandReceipt({ commandId, correlationId, aggregateId: missionId, missionId, workflowId: mission.workflowId });
+  }
   async updateTarget(auth: AuthContext, missionId: string, entityId: string, input: { targetStatus?: 'observed' | 'target' | 'high_priority' | 'archived'; relevanceScore?: number; primaryRouteId?: string }) { requirePermission(auth.role, 'mission:write'); return this.mutate(auth, { aggregateType: 'entity', aggregateId: entityId, eventType: 'entity.updated.v1', missionId }, async (tx) => (await tx.update(missionEntities).set({ ...input, updatedAt: new Date() }).where(and(eq(missionEntities.missionId, missionId), eq(missionEntities.entityId, entityId))).returning())[0]); }
 
   async createOpportunity(auth: AuthContext, missionId: string, organizationId: string, input: { routeId?: string; title?: string; hypothesis?: string; priority?: 'low' | 'medium' | 'high' | 'critical' } = {}) {
@@ -376,17 +481,38 @@ export class MarketService {
 
   actionCards(auth: AuthContext, missionId: string) { requirePermission(auth.role, 'mission:read'); return this.queries.actionCards(auth.tenantId, missionId); }
   async actionCard(auth: AuthContext, missionId: string, actionCardId: string) { const [row] = await this.read(auth, (tx) => tx.select({ actionCard: actionCards, opportunity: opportunities }).from(actionCards).innerJoin(opportunities, eq(opportunities.id, actionCards.opportunityId)).where(and(eq(actionCards.tenantId, auth.tenantId), eq(opportunities.missionId, missionId), eq(actionCards.id, actionCardId))).limit(1)); if (!row) throw new DomainError({ code: 'ACTION_CARD_NOT_FOUND', message: 'Action card not found' }); return row; }
-  async updateActionCard(auth: AuthContext, missionId: string, actionCardId: string, input: Partial<typeof actionCards.$inferInsert> & { expectedVersionNo?: number }) { requirePermission(auth.role, 'mission:write'); const current = await this.actionCard(auth, missionId, actionCardId); if (input.expectedVersionNo !== undefined && current.actionCard.versionNo !== input.expectedVersionNo) throw new DomainError({ code: 'ACTION_CARD_VERSION_CONFLICT', message: 'Action Card version does not match expectedVersionNo', details: { expected: input.expectedVersionNo, actual: current.actionCard.versionNo }, retryable: true }); const changes = { ...input }; delete changes.expectedVersionNo; if (changes.status) assertTransition('action_card', actionCardTransitions, current.actionCard.status, changes.status); else if (!['draft', 'review', 'changes_requested'].includes(current.actionCard.status)) throw new DomainError({ code: 'ACTION_CARD_STATE_CONFLICT', message: 'Approved or executed Action Cards are immutable; regenerate a new version to change content' }); return this.mutate(auth, { aggregateType: 'action_card', aggregateId: actionCardId, eventType: 'action_card.version_created.v1', missionId, opportunityId: current.opportunity.id, before: current.actionCard }, async (tx) => (await tx.update(actionCards).set({ ...changes, updatedAt: new Date() }).where(and(eq(actionCards.tenantId, auth.tenantId), eq(actionCards.id, actionCardId), eq(actionCards.versionNo, current.actionCard.versionNo))).returning())[0]); }
+  async updateActionCard(auth: AuthContext, missionId: string, actionCardId: string, input: Partial<typeof actionCards.$inferInsert> & { expectedVersionNo?: number }) {
+    requirePermission(auth.role, 'mission:write');
+    const current = await this.actionCard(auth, missionId, actionCardId);
+    if (input.expectedVersionNo !== undefined && current.actionCard.versionNo !== input.expectedVersionNo) throw new DomainError({ code: 'ACTION_CARD_VERSION_CONFLICT', message: 'Action Card version does not match expectedVersionNo', details: { expected: input.expectedVersionNo, actual: current.actionCard.versionNo }, retryable: true });
+    const changes = { ...input };
+    delete changes.expectedVersionNo;
+    if (changes.status) {
+      assertTransition('action_card', actionCardTransitions, current.actionCard.status, changes.status);
+      return this.mutate(auth, { aggregateType: 'action_card', aggregateId: actionCardId, eventType: changes.status === 'executed' ? 'action_card.executed.v1' : 'action_card.version_created.v1', missionId, opportunityId: current.opportunity.id, before: current.actionCard }, async (tx) => (await tx.update(actionCards).set({ ...changes, updatedAt: new Date() }).where(and(eq(actionCards.tenantId, auth.tenantId), eq(actionCards.id, actionCardId), eq(actionCards.versionNo, current.actionCard.versionNo))).returning())[0]);
+    }
+    if (!['draft', 'review', 'changes_requested'].includes(current.actionCard.status)) throw new DomainError({ code: 'ACTION_CARD_STATE_CONFLICT', message: 'Approved or executed Action Cards are immutable; regenerate a new version to change content' });
+    const nextId = randomUUID();
+    const nextVersionNo = current.actionCard.versionNo + 1;
+    const created = await this.mutate(auth, { aggregateType: 'action_card', aggregateId: nextId, eventType: 'action_card.version_created.v1', missionId, opportunityId: current.opportunity.id, before: current.actionCard }, async (tx) => {
+      const { id: _id, createdAt: _createdAt, updatedAt: _updatedAt, approvedBy: _approvedBy, approvedAt: _approvedAt, ...base } = current.actionCard;
+      const [card] = await tx.insert(actionCards).values({ ...base, ...changes, id: nextId, versionNo: nextVersionNo, basedOnVersionNo: current.actionCard.versionNo, feedbackRefs: [...current.actionCard.feedbackRefs, current.actionCard.id], status: 'review', approvedBy: null, approvedAt: null }).returning();
+      if (!card) throw new Error('Action Card version insert returned no row');
+      const evidence = await tx.select().from(actionCardEvidenceLinks).where(eq(actionCardEvidenceLinks.actionCardId, current.actionCard.id));
+      for (const link of evidence) await tx.insert(actionCardEvidenceLinks).values({ actionCardId: card.id, evidenceItemId: link.evidenceItemId }).onConflictDoNothing();
+      await tx.insert(approvals).values({ tenantId: auth.tenantId, missionId, opportunityId: current.opportunity.id, actionCardId: card.id, approvalType: 'action_card', status: 'pending', requestedBy: auth.userId });
+      return card;
+    });
+    await this.temporal.signalOpportunity(auth.tenantId, current.opportunity.id, 'actionCardVersionCreated', { actionCardId: created.id, versionNo: created.versionNo, createdByUserId: auth.userId });
+    return created;
+  }
   async decideActionCard(auth: AuthContext, missionId: string, actionCardId: string, input: { decision: 'approve' | 'request_changes'; expectedVersionNo: number; comment?: string }) {
     requirePermission(auth.role, input.decision === 'approve' ? 'action:approve' : 'mission:write');
     const row = await this.actionCard(auth, missionId, actionCardId);
     if (row.actionCard.versionNo !== input.expectedVersionNo) throw new DomainError({ code: 'ACTION_CARD_VERSION_CONFLICT', message: 'Action Card version does not match expectedVersionNo', details: { expected: input.expectedVersionNo, actual: row.actionCard.versionNo }, retryable: true });
     if (input.decision === 'request_changes' && !input.comment?.trim()) throw new DomainError({ code: 'ACTION_CARD_COMMENT_REQUIRED', message: 'A change request comment is required' });
+    if (row.actionCard.status !== 'review') throw new DomainError({ code: 'ACTION_CARD_STATE_CONFLICT', message: 'Only the current review version can receive a decision' });
     const commandId = randomUUID(); const correlationId = randomUUID();
-    await this.transactions.run({ tenantId: auth.tenantId, actor: { type: 'user', id: auth.userId }, correlationId }, async (tx) => {
-      await tx.insert(approvals).values({ tenantId: auth.tenantId, missionId, opportunityId: row.opportunity.id, actionCardId, approvalType: 'action_card', status: input.decision === 'approve' ? 'approved' : 'changes_requested', decidedBy: auth.userId, decidedAt: new Date(), comment: input.comment });
-      await this.eventWriter.append(tx, { tenantId: auth.tenantId, aggregateType: 'action_card', aggregateId: actionCardId, eventType: input.decision === 'approve' ? 'action_card.approved.v1' : 'action_card.changes_requested.v1', actor: { type: 'user', id: auth.userId }, correlationId, payload: { tenantId: auth.tenantId, missionId, opportunityId: row.opportunity.id, aggregateId: actionCardId, actor: { type: 'user', id: auth.userId }, before: { status: row.actionCard.status, versionNo: row.actionCard.versionNo }, after: { decision: input.decision }, metadata: { comment: input.comment ?? '' } } });
-    });
     const workflowId = row.opportunity.workflowId ?? `opportunity:${auth.tenantId}:${row.opportunity.id}`;
     await this.temporal.signalOpportunity(auth.tenantId, row.opportunity.id, 'actionCardDecision', { actionCardId, decision: input.decision, ...(input.comment ? { comment: input.comment } : {}), decidedByUserId: auth.userId, expectedVersionNo: input.expectedVersionNo });
     return this.commandReceipt({ commandId, correlationId, aggregateId: actionCardId, missionId, workflowId });
@@ -402,25 +528,31 @@ export class MarketService {
     const card = row.actionCard;
     if (!['approved', 'exported', 'executed', 'completed'].includes(card.status)) throw new DomainError({ code: 'ACTION_CARD_APPROVAL_REQUIRED', message: 'Action card must be approved before export' });
     const mission = await this.mission(auth, missionId);
-    const [organization, route, stakeholder, primaryContact, backupContact, owner, missionEntity] = await this.read(auth, (tx) => Promise.all([
+    const [organization, route, stakeholder, primaryContact, backupContact, owner, missionEntity, evidenceRows] = await this.read(auth, (tx) => Promise.all([
       tx.select().from(entities).where(and(eq(entities.tenantId, auth.tenantId), eq(entities.id, row.opportunity.organizationId))).limit(1).then((rows) => rows[0]),
       tx.select().from(marketRoutes).where(and(eq(marketRoutes.tenantId, auth.tenantId), eq(marketRoutes.missionId, missionId), eq(marketRoutes.id, row.opportunity.routeId))).limit(1).then((rows) => rows[0]),
-      tx.select().from(stakeholderRoles).where(and(eq(stakeholderRoles.tenantId, auth.tenantId), eq(stakeholderRoles.missionId, missionId), eq(stakeholderRoles.id, card.targetStakeholderRoleId))).limit(1).then((rows) => rows[0]),
-      tx.select().from(contactPoints).where(and(eq(contactPoints.tenantId, auth.tenantId), eq(contactPoints.missionId, missionId), eq(contactPoints.id, card.primaryContactPointId))).limit(1).then((rows) => rows[0]),
+      card.targetStakeholderRoleId ? tx.select().from(stakeholderRoles).where(and(eq(stakeholderRoles.tenantId, auth.tenantId), eq(stakeholderRoles.missionId, missionId), eq(stakeholderRoles.id, card.targetStakeholderRoleId))).limit(1).then((rows) => rows[0]) : Promise.resolve(undefined),
+      card.primaryContactPointId ? tx.select().from(contactPoints).where(and(eq(contactPoints.tenantId, auth.tenantId), eq(contactPoints.missionId, missionId), eq(contactPoints.id, card.primaryContactPointId))).limit(1).then((rows) => rows[0]) : Promise.resolve(undefined),
       card.backupContactPointId ? tx.select().from(contactPoints).where(and(eq(contactPoints.tenantId, auth.tenantId), eq(contactPoints.missionId, missionId), eq(contactPoints.id, card.backupContactPointId))).limit(1).then((rows) => rows[0]) : Promise.resolve(undefined),
       card.ownerId ? tx.select().from(users).where(eq(users.id, card.ownerId)).limit(1).then((rows) => rows[0]) : Promise.resolve(undefined),
       tx.select().from(missionEntities).where(and(eq(missionEntities.missionId, missionId), eq(missionEntities.entityId, row.opportunity.organizationId))).limit(1).then((rows) => rows[0]),
+      tx.select({ evidence: evidenceItems, snapshot: sourceSnapshots, source: sources }).from(actionCardEvidenceLinks).innerJoin(evidenceItems, eq(evidenceItems.id, actionCardEvidenceLinks.evidenceItemId)).innerJoin(sourceSnapshots, eq(sourceSnapshots.id, evidenceItems.sourceSnapshotId)).innerJoin(sources, eq(sources.id, sourceSnapshots.sourceId)).where(and(eq(actionCardEvidenceLinks.actionCardId, card.id), eq(evidenceItems.tenantId, auth.tenantId), eq(evidenceItems.missionId, missionId))),
     ]));
     const slug = (value: string): string => value.normalize('NFKD').replace(/[^a-zA-Z0-9\u4e00-\u9fff]+/g, '-').replace(/^-|-$/g, '').toLowerCase() || 'action-card';
     const filenameBase = `${slug(mission.name)}-${slug(organization?.canonicalName ?? row.opportunity.title)}-action-card-v${card.versionNo}`;
-    await this.transactions.run({ tenantId: auth.tenantId, actor: { type: 'user', id: auth.userId }, correlationId: randomUUID() }, (tx) => this.eventWriter.append(tx, { tenantId: auth.tenantId, aggregateType: 'action_card', aggregateId: card.id, eventType: 'action_card.executed.v1', actorType: 'user', actorId: auth.userId, payload: { tenantId: auth.tenantId, missionId, opportunityId: row.opportunity.id, aggregateId: card.id, actor: { type: 'user', id: auth.userId }, metadata: { operation: 'export', format } } }));
+    const correlationId = randomUUID();
+    await this.transactions.run({ tenantId: auth.tenantId, actor: { type: 'user', id: auth.userId }, correlationId }, async (tx) => {
+      if (card.status === 'approved') await tx.update(actionCards).set({ status: 'exported', updatedAt: new Date() }).where(and(eq(actionCards.tenantId, auth.tenantId), eq(actionCards.id, card.id), eq(actionCards.status, 'approved')));
+      await this.eventWriter.append(tx, { tenantId: auth.tenantId, aggregateType: 'action_card', aggregateId: card.id, eventType: 'action_card.exported.v1', actorType: 'user', actorId: auth.userId, correlationId, payload: { tenantId: auth.tenantId, missionId, opportunityId: row.opportunity.id, aggregateId: card.id, actor: { type: 'user', id: auth.userId }, before: { status: card.status }, after: { status: card.status === 'approved' ? 'exported' : card.status }, evidenceRefs: evidenceRows.map((evidence) => evidence.evidence.id), metadata: { format, cardType: card.cardType } } });
+    });
     if (format === 'csv') {
-      const headers = ['mission_name','country','organization_name','organization_website','market_role','route_type','opportunity_status','priority','score','commercial_value_band','resource_efficiency','stakeholder_role','person_name','person_title','primary_contact_type','primary_contact_value','primary_contact_source','primary_contact_verified_at','backup_contact_type','backup_contact_value','contact_reason','value_hypothesis','first_contact_objective','email_subject','email_body','social_message','next_action','owner','due_at'];
-      const values = [mission.name, organization?.countryCode ?? '', organization?.canonicalName ?? '', organization?.website ?? '', missionEntity?.marketRoles.join('|') ?? '', route?.routeType ?? '', row.opportunity.status, row.opportunity.priority, row.opportunity.score, row.opportunity.commercialValueBand, row.opportunity.resourceEfficiency, stakeholder?.roleType ?? '', stakeholder?.personId ?? '', stakeholder?.title ?? '', primaryContact?.contactType ?? '', primaryContact?.value ?? '', primaryContact?.sourceId ?? '', primaryContact?.lastVerifiedAt?.toISOString() ?? '', backupContact?.contactType ?? '', backupContact?.value ?? '', card.contactReason, card.valueHypothesis, card.objective, card.emailSubject ?? '', card.emailBody ?? '', card.socialMessage ?? '', row.opportunity.nextAction, owner?.displayName ?? '', card.dueAt?.toISOString() ?? ''];
+      const headers = ['mission_name','execution_mode','country','organization_name','organization_website','market_role','route_type','card_type','target_role','opportunity_status','priority','score','stakeholder_role','primary_contact_type','primary_contact_value','primary_contact_verified_at','backup_contact_type','backup_contact_value','action_reason','value_hypothesis','action_objective','email_subject','email_body','social_message','research_plan','unknowns','evidence_sources','next_action','owner','due_at'];
+      const values = [mission.name, mission.executionMode, organization?.countryCode ?? '', organization?.canonicalName ?? '', organization?.website ?? '', missionEntity?.marketRoles.join('|') ?? '', route?.routeType ?? '', card.cardType, card.targetRoleLabel, row.opportunity.status, row.opportunity.priority, row.opportunity.score, stakeholder?.roleType ?? '', primaryContact?.contactType ?? '', primaryContact?.value ?? '', primaryContact?.lastVerifiedAt?.toISOString() ?? '', backupContact?.contactType ?? '', backupContact?.value ?? '', card.contactReason, card.valueHypothesis, card.objective, card.emailSubject ?? '', card.emailBody ?? '', card.socialMessage ?? '', card.researchPlan.join('|'), card.unknowns.join('|'), evidenceRows.map((evidence) => evidence.source.url ?? evidence.source.title ?? evidence.evidence.id).join('|'), row.opportunity.nextAction, owner?.displayName ?? '', card.dueAt?.toISOString() ?? ''];
       const content = `${headers.join(',')}\n${values.map((value) => `"${String(value).replaceAll('"', '""')}"`).join(',')}\n`;
       return { content, filename: `${filenameBase}.csv`, contentType: 'text/csv; charset=utf-8' };
     }
-    const content = `# ${row.opportunity.title}\n\n## Opportunity Summary\n\n- Status: ${row.opportunity.status}\n- Priority: ${row.opportunity.priority}\n- Score: ${row.opportunity.score}\n- Next Action: ${row.opportunity.nextAction}\n\n## Target Organization\n\n- Name: ${organization?.canonicalName ?? 'Unknown'}\n- Website: ${organization?.website ?? 'Unknown'}\n- Country: ${organization?.countryCode ?? 'Unknown'}\n- Market Role: ${missionEntity?.marketRoles.join(', ') ?? 'Unknown'}\n\n## Stakeholder\n\n- Role: ${stakeholder?.roleType ?? 'Unknown'}\n- Title: ${stakeholder?.title ?? 'Unknown'}\n- Interest: ${card.stakeholderInterest}\n\n## Contact Paths\n\n- Channel: ${card.channel}\n- Primary: ${primaryContact?.contactType ?? 'Unknown'} · ${primaryContact?.value ?? 'Unknown'} · verified ${primaryContact?.lastVerifiedAt?.toISOString() ?? 'Unknown'}\n- Backup: ${backupContact ? `${backupContact.contactType} · ${backupContact.value}` : 'Unknown'}\n\n## Why Contact\n\n${card.contactReason}\n\n## Stakeholder Interest\n\n${card.stakeholderInterest}\n\n## Value Hypothesis\n\n${card.valueHypothesis}\n\n## First Contact Objective\n\n${card.objective}\n\n## Message Templates\n\n### Email Subject\n\n${card.emailSubject ?? ''}\n\n### Email Body\n\n${card.emailBody ?? ''}\n\n### Social Message\n\n${card.socialMessage ?? ''}\n\n### Call Opening\n\n${card.callOpening ?? ''}\n\n## Attachments\n\n${card.attachmentsRequired.map((item) => `- ${item}`).join('\n')}\n\n## Follow Up Plan\n\n${JSON.stringify(card.followUpPlan, null, 2)}\n\n## Success Signals\n\n${card.successSignals.map((item) => `- ${item}`).join('\n')}\n\n## Evidence\n\n- Route: ${route?.title ?? 'Unknown'}\n- Route evidence: ${route?.evidenceSummary ?? 'Unknown'}\n- Primary contact source: ${primaryContact?.sourceId ?? 'Unknown'}\n- Primary contact last verified: ${primaryContact?.lastVerifiedAt?.toISOString() ?? 'Unknown'}\n\n## Unknowns\n\n${card.completionSignals.map((item) => `- Completion signal pending: ${item}`).join('\n')}\n`;
+    const evidenceSection = evidenceRows.map((evidence, index) => `${index + 1}. ${evidence.source.title ?? evidence.source.url ?? 'Public source'}\n   - URL: ${evidence.source.url ?? 'Snapshot only'}\n   - Fetched: ${evidence.snapshot.fetchedAt.toISOString()}\n   - Content hash: ${evidence.snapshot.contentHash}\n   - Excerpt: ${evidence.evidence.excerpt}`).join('\n');
+    const content = `# ${row.opportunity.title}\n\n- Mission: ${mission.name}\n- Execution mode: ${mission.executionMode}\n- Card type: ${card.cardType}\n- Status: ${card.status === 'approved' ? 'exported' : card.status}\n- Priority: ${row.opportunity.priority}\n- Score: ${row.opportunity.score}\n\n## Target Organization\n\n- Name: ${organization?.canonicalName ?? 'Unknown'}\n- Website: ${organization?.website ?? 'Unknown'}\n- Country: ${organization?.countryCode ?? 'Unknown'}\n- Market role: ${missionEntity?.marketRoles.join(', ') ?? 'Unknown'}\n- Target role: ${card.targetRoleLabel}\n\n## Approved Route\n\n- Route: ${route?.title ?? 'Unknown'}\n- Hypothesis: ${route?.hypothesis ?? 'Unknown'}\n\n## Action\n\n### Objective\n\n${card.objective}\n\n### Why this action\n\n${card.contactReason}\n\n### Why now\n\n${card.timingReason}\n\n### Stakeholder interest\n\n${card.stakeholderInterest}\n\n### Value hypothesis\n\n${card.valueHypothesis}\n\n## Contact Path\n\n- Channel: ${card.channel ?? 'Research required'}\n- Primary: ${primaryContact ? `${primaryContact.contactType} · ${primaryContact.value} · verified ${primaryContact.lastVerifiedAt?.toISOString() ?? 'Unknown'}` : 'No verified public contact path'}\n- Backup: ${backupContact ? `${backupContact.contactType} · ${backupContact.value}` : 'Unknown'}\n\n## Outreach Content\n\n- Email subject: ${card.emailSubject ?? 'Not applicable'}\n\n${card.emailBody ?? card.socialMessage ?? card.callOpening ?? 'Not applicable'}\n\n## Research Plan\n\n${card.researchPlan.length > 0 ? card.researchPlan.map((item) => `- ${item}`).join('\n') : '- Not applicable'}\n\n## Unknowns\n\n${card.unknowns.length > 0 ? card.unknowns.map((item) => `- ${item}`).join('\n') : '- None recorded'}\n\n## Success Signals\n\n${card.successSignals.map((item) => `- ${item}`).join('\n')}\n\n## Public Evidence\n\n${evidenceSection || 'No linked evidence'}\n`;
     return { content, filename: `${filenameBase}.md`, contentType: 'text/markdown; charset=utf-8' };
   }
 

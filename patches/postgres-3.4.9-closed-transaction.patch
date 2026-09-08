@@ -1,0 +1,22 @@
+--- a/src/connection.js
++++ b/src/connection.js
+@@ -157,6 +157,11 @@
+     if (terminated)
+       return queryError(q, Errors.connection('CONNECTION_DESTROYED', options))
+ 
++    if (!socket || socket.destroyed) {
++      queryError(q, Errors.connection('CONNECTION_CLOSED', options, socket))
++      return true
++    }
++
+     if (stream)
+       return queryError(q, Errors.generic('COPY_IN_PROGRESS', 'You cannot execute queries during copy'))
+ 
+@@ -451,6 +456,7 @@
+ 
+     !hadError && (query || sent.length) && error(Errors.connection('CONNECTION_CLOSED', options, socket))
++    query = null
+     closedTime = performance.now()
+     hadError && options.shared.retries++
+     delay = (typeof backoff === 'function' ? backoff(options.shared.retries) : backoff) * 1000
+     onclose(connection, Errors.connection('CONNECTION_CLOSED', options, socket))

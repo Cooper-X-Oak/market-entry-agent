@@ -97,6 +97,15 @@ export const marketRoutes = pgTable('market_routes', {
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 }, (table) => [index('market_routes_mission_status_idx').on(table.missionId, table.status)]);
 
+export const routeEvidenceLinks = pgTable('route_evidence_links', {
+  tenantId: uuid('tenant_id').notNull().references(() => tenants.id, { onDelete: 'cascade' }),
+  missionId: uuid('mission_id').notNull().references(() => missions.id, { onDelete: 'cascade' }),
+  routeId: uuid('route_id').notNull().references(() => marketRoutes.id, { onDelete: 'cascade' }),
+  evidenceItemId: uuid('evidence_item_id').notNull().references(() => evidenceItems.id, { onDelete: 'cascade' }),
+  stance: evidenceStanceEnum('stance').notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [primaryKey({ columns: [table.routeId, table.evidenceItemId, table.stance] }), index('route_evidence_mission_idx').on(table.missionId, table.routeId)]);
+
 export const missionEntities = pgTable('mission_entities', {
   missionId: uuid('mission_id').notNull().references(() => missions.id, { onDelete: 'cascade' }),
   entityId: uuid('entity_id').notNull().references(() => entities.id, { onDelete: 'cascade' }),
@@ -108,6 +117,32 @@ export const missionEntities = pgTable('mission_entities', {
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 }, (table) => [primaryKey({ columns: [table.missionId, table.entityId] })]);
+
+export const targetAssessments = pgTable('target_assessments', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  tenantId: uuid('tenant_id').notNull().references(() => tenants.id, { onDelete: 'cascade' }),
+  missionId: uuid('mission_id').notNull().references(() => missions.id, { onDelete: 'cascade' }),
+  entityId: uuid('entity_id').notNull().references(() => entities.id, { onDelete: 'cascade' }),
+  routeId: uuid('route_id').notNull().references(() => marketRoutes.id, { onDelete: 'cascade' }),
+  rank: integer('rank').notNull(),
+  marketRole: varchar('market_role', { length: 120 }).notNull(),
+  productFit: integer('product_fit').notNull(),
+  routeFit: integer('route_fit').notNull(),
+  demandSignal: integer('demand_signal').notNull(),
+  contactability: integer('contactability').notNull(),
+  evidenceQuality: integer('evidence_quality').notNull(),
+  finalScore: integer('final_score').notNull(),
+  rationale: text('rationale').notNull(),
+  gatePassed: boolean('gate_passed').notNull().default(false),
+  artifactVersionId: uuid('artifact_version_id').notNull().references(() => artifactVersions.id),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [uniqueIndex('target_assessments_mission_entity_route_uidx').on(table.missionId, table.entityId, table.routeId), index('target_assessments_mission_rank_idx').on(table.missionId, table.rank)]);
+
+export const targetAssessmentEvidenceLinks = pgTable('target_assessment_evidence_links', {
+  targetAssessmentId: uuid('target_assessment_id').notNull().references(() => targetAssessments.id, { onDelete: 'cascade' }),
+  evidenceItemId: uuid('evidence_item_id').notNull().references(() => evidenceItems.id, { onDelete: 'cascade' }),
+}, (table) => [primaryKey({ columns: [table.targetAssessmentId, table.evidenceItemId] })]);
 
 export const entityRelationships = pgTable('entity_relationships', {
   id: uuid('id').primaryKey().defaultRandom(),

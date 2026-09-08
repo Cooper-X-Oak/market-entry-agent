@@ -1,6 +1,10 @@
-# V1 upgrade implementation status
+# V1 UP01–UP10 历史交付记录
 
-This is the delivery record for upgrade packages UP01–UP10. Source paths are permanent project infrastructure; `coverage/`, `.next/`, `dist/`, Playwright output, container volumes and runtime objects are generated evidence and are not source-managed.
+> 2026-09-08：当前核心实现已包含执行身份恢复修复，但 M1 真实业务未通过；行业信号输出校验失败与业务流程顺序差异仍未解决。以下为历史记录，不是本次发布通过声明。
+
+本文保留 UP01–UP10 的历史实施范围与当时的 PASS / BLOCKED 记录，用于追溯工程来源，不承担当前版本状态或验收入口。当前状态、已记录证据与 BM1 验收口径统一见 [当前状态与 BM1 验收入口](testing/README.md)。
+
+Source paths are permanent project infrastructure; `coverage/`, `.next/`, `dist/`, Playwright output, container volumes and runtime objects are generated evidence and are not source-managed.
 
 | UP | Status | Permanent implementation | Migration / API / Workflow / UI | Test and acceptance evidence |
 |---|---|---|---|---|
@@ -29,11 +33,11 @@ This is the delivery record for upgrade packages UP01–UP10. Source paths are p
 - Worker Activities are tenant-scoped and transactional. Agent output is parsed/validated before write; idempotency covers retries.
 - The workbench exposes child progress/pending actions, route review, Contact trust chain, Opportunity transition evidence, card feedback/versioning, full Interaction entry, correlated Timeline and Agent/Tool provenance.
 
-## Final gate record
+## 历史交付检查记录
 
-The following commands are the sole delivery gates. Record the current run outcome here when completed; do not infer a pass from source presence.
+以下为 UP01–UP10 当时的检查结果，保留历史 PASS / BLOCKED，不随当前环境变化改写。后续验收记录从 [统一入口](testing/README.md) 引用，不能由源码存在、历史通过或 Provider 能力检查推定 BM1 Live 已通过。
 
-| Gate | Current run |
+| Gate | Historical run |
 |---|---|
 | `pnpm install --frozen-lockfile` | **PASS** — lockfile current, pnpm 10.15.0, 15 workspace projects |
 | `pnpm lint` | **PASS** — 14/14 Turbo tasks |
@@ -45,4 +49,4 @@ The following commands are the sole delivery gates. Record the current run outco
 | `pnpm build` | **PASS** — 14/14 Turbo tasks; Next production build emitted all workbench routes |
 | `docker compose up --build` and health inspection | **ENVIRONMENT BLOCKED** — `docker` is not installed or not present on PATH on this host |
 
-Acceptance evidence is reproducible from the command output, coverage reports under package `coverage/`, Playwright output, Temporal test histories and Compose service health/logs. The two blocked gates require a Docker-compatible container runtime, then `docker compose up --build` and the documented seed command. No credentials or runtime business data are included in this document.
+历史证据来源包括命令输出、各包的 `coverage/`、Playwright 输出、Temporal 测试历史和 Compose 日志。表中的环境阻塞描述的是该次运行所用本机环境，不能作为当前 Vultr 环境仍被阻塞的结论。当前使用方式见 [项目 README](../README.md)，当前验收边界见 [统一入口](testing/README.md)。本文不包含凭证或运行时业务数据。

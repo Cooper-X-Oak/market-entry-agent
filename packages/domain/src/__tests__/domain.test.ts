@@ -21,7 +21,7 @@ describe('structured business gates and command transitions', () => {
   it('returns stable reason codes for incomplete route, opportunity and action-card gates', () => {
     expect(routeReviewGate({ approvedRouteIds: [], acceptedArtifactVersionIds: [] }).reasonCodes).toEqual(['ROUTE_APPROVAL_REQUIRED', 'ACCEPTED_ROUTE_ARTIFACT_REQUIRED']);
     expect(opportunityCreationGate({ entityResolved: true, approvedRouteId: id(1), stakeholderRoleCount: 0, contactPointCount: 0, evidenceRefs: [], score: 40, threshold: 60 }).reasonCodes).toEqual(['STAKEHOLDER_ROLE_REQUIRED', 'CONTACT_POINT_REQUIRED', 'EVIDENCE_REQUIRED', 'SCORE_BELOW_THRESHOLD']);
-    expect(actionCardGate({ opportunityStatus: 'contact_path_verified', targetStakeholderRoleId: id(2), primaryContactPointId: id(3), primaryContactStatus: 'source_confirmed', routeId: id(4), evidenceRefs: [id(5)], unresolvedCriticalUnknowns: [] }).passed).toBe(true);
+    expect(actionCardGate({ opportunityStatus: 'contact_path_verified', targetStakeholderRoleId: id(2), primaryContactPointId: id(3), primaryContactStatus: 'source_confirmed', routeId: id(4), evidenceRefs: [id(5)], unresolvedCriticalUnknowns: [], generatedContentCount: 1 }).passed).toBe(true);
   });
 
   it('derives contact trust status only from the declared verification facts', () => {
@@ -59,7 +59,7 @@ describe('structured business gates and command transitions', () => {
     expect(contactVerifiedGate({ primaryContactStatus: 'format_valid', primaryContactEvidenceRefs: [] }).reasonCodes).toEqual(['PRIMARY_CONTACT_NOT_VERIFIED', 'PRIMARY_CONTACT_EVIDENCE_REQUIRED']);
     expect(actionCardGate({ hasScore: true, hasPrimaryStakeholder: true, hasPrimaryContact: true, hasBackupContact: true, hasContactReason: true, hasStakeholderInterest: true, hasObjective: true, generatedContentCount: 1, evidenceCoverage: 80 }).passed).toBe(true);
     expect(actionCardGate({ hasScore: false, hasPrimaryStakeholder: false, hasPrimaryContact: false, hasBackupContact: false, hasContactReason: false, hasStakeholderInterest: false, hasObjective: false, generatedContentCount: 0, evidenceCoverage: 79 }).reasonCodes).toHaveLength(9);
-    expect(actionCardGate({ opportunityStatus: 'observed', targetStakeholderRoleId: '', primaryContactPointId: '', primaryContactStatus: 'format_valid', routeId: '', evidenceRefs: [], unresolvedCriticalUnknowns: ['budget'] }).reasonCodes).toHaveLength(7);
+    expect(actionCardGate({ opportunityStatus: 'observed', targetStakeholderRoleId: '', primaryContactPointId: '', primaryContactStatus: 'format_valid', routeId: '', evidenceRefs: [], unresolvedCriticalUnknowns: ['budget'], generatedContentCount: 0 }).reasonCodes).toHaveLength(8);
   });
 });
 

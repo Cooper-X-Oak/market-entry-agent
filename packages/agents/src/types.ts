@@ -4,9 +4,14 @@ import type { z } from 'zod';
 import type { BuiltContext } from './context-builder.js';
 
 export interface ModelUsage {
-  inputTokens: number;
-  outputTokens: number;
-  costAmount: number;
+  inputTokens: number | null;
+  outputTokens: number | null;
+  costAmount: number | null;
+}
+
+export interface ProviderAttempt {
+  attempt: number; state: 'started' | 'succeeded' | 'failed'; at: string;
+  requestId?: string; responseId?: string; outputHash?: string; usage?: ModelUsage; errorCode?: string;
 }
 
 export interface ModelResult<T> {
@@ -16,7 +21,7 @@ export interface ModelResult<T> {
 
 export interface ModelProvider {
   readonly name: string;
-  generate<T>(input: { model: string; name: string; instructions: string; prompt: string; outputSchema: z.ZodType<T>; maxTurns: number }): Promise<ModelResult<T>>;
+  generate<T>(input: { model: string; name: string; instructions: string; prompt: string; outputSchema: z.ZodType<T>; maxTurns: number; signal?: AbortSignal; onAttempt?: (event: ProviderAttempt) => Promise<void> }): Promise<ModelResult<T>>;
 }
 
 export interface AgentSkill<T = unknown> {
@@ -26,6 +31,7 @@ export interface AgentSkill<T = unknown> {
   instructions: string;
   outputSchema: z.ZodType<T>;
   maxResearchLoops: number;
+  evidenceStopThreshold?: number;
   permittedConnectors: string[];
   planQueries(input: AgentTaskInput): ConnectorRequest[];
 }
@@ -47,6 +53,7 @@ export interface RunStore {
   toolCompleted(toolRunId: string, result: ConnectorResult): Promise<void>;
   toolFailed(toolRunId: string, error: unknown): Promise<void>;
   contextReady(runId: string, context: BuiltContext): Promise<void>;
+  providerAttempt(runId: string, event: ProviderAttempt): Promise<void>;
   complete(runId: string, output: unknown, usage: ModelUsage): Promise<void>;
   fail(runId: string, error: unknown): Promise<void>;
 }

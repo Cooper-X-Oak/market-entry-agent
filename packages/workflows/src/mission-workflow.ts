@@ -3,9 +3,10 @@ import {
   ParentClosePolicy, proxyActivities, setHandler, startChild, workflowInfo,
 } from '@temporalio/workflow';
 import type {
-  BudgetUpdatedSignal, CapabilityResearchRequestedSignal, ManualRefreshRequestedSignal,
+  BudgetUpdatedSignal, CapabilityResearchRequestedSignal, CapabilityReviewSubmittedSignal, ManualRefreshRequestedSignal,
   MissionCompletionRequestedSignal, MissionPauseRequestedSignal, MissionResumeRequestedSignal,
   MissionWorkflowState, OpportunityMilestoneReportedSignal, RouteReviewSubmittedSignal,
+  TargetReviewSubmittedSignal,
 } from '@imea/contracts';
 import { activityScope } from './activity-scope.js';
 import type { MarketEntryActivities, MissionWorkflowInput } from './types.js';
@@ -23,9 +24,11 @@ function isBudgetFailure(error: unknown): boolean {
   return false;
 }
 
-const activities = proxyActivities<MarketEntryActivities>({ startToCloseTimeout: '5 minutes', retry: { maximumAttempts: 5, initialInterval: '2 seconds', backoffCoefficient: 2, maximumInterval: '1 minute' } });
+const activities = proxyActivities<MarketEntryActivities>({ startToCloseTimeout: '5 minutes', heartbeatTimeout: '15 seconds', retry: { maximumAttempts: 1 } });
 
 export const routeReviewSubmitted = defineSignal<[RouteReviewSubmittedSignal]>('routeReviewSubmitted');
+export const capabilityReviewSubmitted = defineSignal<[CapabilityReviewSubmittedSignal]>('capabilityReviewSubmitted');
+export const targetReviewSubmitted = defineSignal<[TargetReviewSubmittedSignal]>('targetReviewSubmitted');
 export const missionPauseRequested = defineSignal<[MissionPauseRequestedSignal]>('missionPauseRequested');
 export const missionResumeRequested = defineSignal<[MissionResumeRequestedSignal]>('missionResumeRequested');
 export const manualRefreshRequested = defineSignal<[ManualRefreshRequestedSignal]>('manualRefreshRequested');
@@ -44,6 +47,8 @@ export async function missionWorkflow(input: MissionWorkflowInput): Promise<void
     budgetReviewRequired: false, pendingRefreshRequestIds: [], pendingCapabilityResearchRequestIds: [], lastProcessedSignalSequence: 0,
   };
   let routeReview: RouteReviewSubmittedSignal | undefined;
+  let capabilityReview: CapabilityReviewSubmittedSignal | undefined;
+  let targetReview: TargetReviewSubmittedSignal | undefined;
   let completeRequested = false;
   let pauseReason: string | undefined;
   let pendingBudget: BudgetUpdatedSignal | undefined;
@@ -57,6 +62,8 @@ export async function missionWorkflow(input: MissionWorkflowInput): Promise<void
   setHandler(getPendingApprovals, () => state.pendingApprovals);
   setHandler(getChildOpportunityStatuses, () => state.childOpportunities);
   setHandler(routeReviewSubmitted, (signal) => { routeReview = signal; state.pendingApprovals = state.pendingApprovals.filter((item) => item !== 'market_route'); signalReceived(); });
+  setHandler(capabilityReviewSubmitted, (signal) => { capabilityReview = signal; state.pendingApprovals = state.pendingApprovals.filter((item) => item !== 'capability_review'); signalReceived(); });
+  setHandler(targetReviewSubmitted, (signal) => { targetReview = signal; state.pendingApprovals = state.pendingApprovals.filter((item) => item !== 'target_review'); signalReceived(); });
   setHandler(missionPauseRequested, (signal) => { state.paused = true; pauseReason = signal.reason; signalReceived(); });
   setHandler(missionResumeRequested, () => { state.paused = false; signalReceived(); });
   setHandler(manualRefreshRequested, (signal) => { if (!manualRefreshSignals.some((item) => item.requestId === signal.requestId)) manualRefreshSignals.push(signal); state.pendingRefreshRequestIds = manualRefreshSignals.map((item) => item.requestId); signalReceived(); });
@@ -103,11 +110,27 @@ export async function missionWorkflow(input: MissionWorkflowInput): Promise<void
   if (state.stage !== 'active') {
     const mission = await step('loadMission', () => activities.loadMission(scoped('loadMission')));
     await step('compileMission', () => activities.compileMission(scoped('compileMission')));
+    if (mission.supplierKnown !== false) {
     state.stage = 'ingesting_company_data';
     await step('ingestCompanySources', () => activities.ingestCompanySources(scoped('ingestCompanySources')));
+    state.stage = 'researching_capabilities';
+    await step('extractCapabilityClaims', () => activities.extractCapabilityClaims(scoped('extractCapabilityClaims')));
+    await activities.markMissionAwaitingCapabilityReview(scoped('markMissionAwaitingCapabilityReview'));
+    state.stage = 'awaiting_capability_review';
+    if (!state.pendingApprovals.includes('capability_review')) state.pendingApprovals.push('capability_review');
+    while (!capabilityReview && !completeRequested) {
+      await condition(() => capabilityReview !== undefined || completeRequested || capabilitySignals.length > 0);
+      while (capabilitySignals.length > 0) {
+        const request = capabilitySignals.shift()!;
+        state.pendingCapabilityResearchRequestIds = capabilitySignals.map((item) => item.requestId);
+        await step(`extractCapabilityClaims:${request.requestId}`, () => activities.extractCapabilityClaims(scoped('extractCapabilityClaims', request.requestId)));
+      }
+    }
+    if (completeRequested) { await activities.markMissionCompleted(scoped('markMissionCompleted')); return; }
+    await activities.recordCapabilityReview({ ...scoped('recordCapabilityReview', capabilityReview!.commandId), ...capabilityReview! });
+    }
     state.stage = 'researching_routes';
     await Promise.all([
-      step('extractCapabilityClaims', () => activities.extractCapabilityClaims(scoped('extractCapabilityClaims'))),
       step('researchMarketRoutes', () => activities.researchMarketRoutes(scoped('researchMarketRoutes'))),
       step('researchCompetitors', () => activities.researchCompetitors(scoped('researchCompetitors'))),
       step('researchExpertSignals', () => activities.researchExpertSignals(scoped('researchExpertSignals'))),
@@ -124,23 +147,37 @@ export async function missionWorkflow(input: MissionWorkflowInput): Promise<void
       }
     }
     if (completeRequested) { await activities.markMissionCompleted(scoped('markMissionCompleted')); return; }
-    const approvedRoutes = routeReview?.approvedRouteIds ?? await step('loadApprovedRoutes', () => activities.loadApprovedRoutes(scoped('loadApprovedRoutes')));
+    const approvedRoutes = await activities.recordRouteReview({ ...scoped('recordRouteReview', routeReview?.commandId ?? input.missionId), ...routeReview! });
     state.stage = 'researching_ecosystem';
     await Promise.all(approvedRoutes.map((routeId) => step(`discoverEcosystem:${routeId}`, () => activities.discoverEcosystem({ ...scoped('discoverEcosystem', routeId), routeId }))));
     await step('resolveEntities', () => activities.resolveEntities(scoped('resolveEntities')));
     state.stage = 'researching_targets';
     const targets = (await step('rankTargets', () => activities.rankTargets(scoped('rankTargets')))).slice(0, mission.topTargetLimit);
+    state.candidateTargetIds = targets;
+    await activities.markMissionAwaitingTargetReview({ ...scoped('markMissionAwaitingTargetReview'), candidateTargetIds: targets });
+    state.stage = 'awaiting_target_review';
+    if (!state.pendingApprovals.includes('target_review')) state.pendingApprovals.push('target_review');
+    await condition(() => targetReview !== undefined || completeRequested);
+    if (completeRequested) { await activities.markMissionCompleted(scoped('markMissionCompleted')); return; }
+    const selectedTargets = await activities.recordTargetReview({ ...scoped('recordTargetReview', targetReview!.commandId), ...targetReview! });
+    state.selectedTargetIds = selectedTargets.map((target) => target.organizationId);
     state.stage = 'researching_contacts';
-    for (const organizationId of targets) {
-      const opportunityId = await activities.createOpportunity({ ...scoped('createOpportunity', organizationId), organizationId });
+    for (const target of selectedTargets) {
+      const opportunityId = await activities.createOpportunity({ ...scoped('createOpportunity', target.organizationId), organizationId: target.organizationId, routeId: target.routeId });
       const workflowId = `opportunity:${input.tenantId}:${opportunityId}`;
-      await startChild(opportunityWorkflow, { args: [{ tenantId: input.tenantId, missionId: input.missionId, opportunityId }], workflowId, parentClosePolicy: ParentClosePolicy.PARENT_CLOSE_POLICY_ABANDON });
+      await startChild(opportunityWorkflow, { args: [{ tenantId: input.tenantId, missionId: input.missionId, opportunityId, ownershipRunId: workflowInfo().firstExecutionRunId }], workflowId, parentClosePolicy: ParentClosePolicy.PARENT_CLOSE_POLICY_ABANDON });
       state.childOpportunities[opportunityId] = { workflowId, status: 'target_identified', milestone: 'started' };
       await activities.recordChildWorkflow({ ...scoped('recordChildWorkflow', opportunityId), opportunityId, workflowId });
     }
     state.stage = 'generating_actions';
     await condition(() => Object.values(state.childOpportunities).every((child) => ['action_ready', 'approved', 'paused', 'lost', 'archived', 'won'].includes(child.status)) || completeRequested);
     if (completeRequested) { await activities.markMissionCompleted(scoped('markMissionCompleted')); return; }
+    state.stage = 'awaiting_action_review';
+    if (!state.pendingApprovals.includes('action_card')) state.pendingApprovals.push('action_card');
+    await activities.markMissionAwaitingActionReview(scoped('markMissionAwaitingActionReview'));
+    await condition(() => Object.values(state.childOpportunities).some((child) => child.status === 'approved') || completeRequested);
+    if (completeRequested) { await activities.markMissionCompleted(scoped('markMissionCompleted')); return; }
+    state.pendingApprovals = state.pendingApprovals.filter((item) => item !== 'action_card');
     state.stage = 'active';
     await activities.markMissionActive(scoped('markMissionActive'));
     await activities.createRefreshSchedule(scoped('createRefreshSchedule'));
@@ -149,9 +186,9 @@ export async function missionWorkflow(input: MissionWorkflowInput): Promise<void
   while (!completeRequested) {
     await condition(() => completeRequested || manualRefreshSignals.length > 0 || capabilitySignals.length > 0 || state.paused || pendingBudget !== undefined || workflowInfo().continueAsNewSuggested);
     if (state.paused) {
-      await activities.setMissionPaused({ ...scoped('setMissionPaused'), paused: true, ...(pauseReason ? { reason: pauseReason } : {}) });
+      await activities.setMissionPaused({ ...scoped('setMissionPaused', `pause:${state.lastProcessedSignalSequence}`), paused: true, ...(pauseReason ? { reason: pauseReason } : {}) });
       await condition(() => !state.paused || completeRequested);
-      if (!completeRequested) await activities.setMissionPaused({ ...scoped('setMissionPaused'), paused: false });
+      if (!completeRequested) await activities.setMissionPaused({ ...scoped('setMissionPaused', `resume:${state.lastProcessedSignalSequence}`), paused: false });
     }
     await applyBudget();
     while (manualRefreshSignals.length > 0) {

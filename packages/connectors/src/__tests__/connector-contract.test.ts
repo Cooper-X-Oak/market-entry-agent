@@ -40,6 +40,7 @@ describe('connector contract', () => {
   it('uses content-addressed evidence identifiers for idempotent duplicate persistence', () => {
     const item = { title: 'Same page', url: 'https://source.example/page', content: 'same body', metadata: {} };
     expect(evidenceIdForItem(item)).toBe(evidenceIdForItem({ ...item, metadata: { fetchedAt: 'later' } }));
+    expect(evidenceIdForItem(item, 'mission-a')).not.toBe(evidenceIdForItem(item, 'mission-b'));
   });
 
   it.each([

@@ -35,8 +35,8 @@ export class ContextBuilder {
         outputLanguage: input.outputLanguage,
         toolPermissions: input.toolPermissions,
       });
-      const toolEvidenceIds = toolResults.flatMap((result) => result.evidence?.map((evidence) => evidence.evidenceId) ?? []);
-      const evidenceIds = [...new Set([...loaded.evidence.map((evidence) => evidence.evidenceId), ...toolEvidenceIds])];
+      // Only repository-read evidence with existing Source/Snapshot joins is citable.
+      const evidenceIds = [...new Set(loaded.evidence.map((evidence) => evidence.evidenceId))];
       const structured = agentExecutionContextSchema.parse({
         ...loaded,
         execution: { ...loaded.execution, skillKey: input.skillKey, objective: input.objective, outputLanguage: input.outputLanguage, toolPermissions: input.toolPermissions },

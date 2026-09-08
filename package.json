@@ -16,6 +16,7 @@
     "infra:down": "docker compose down",
     "db:migrate": "pnpm --filter @imea/database db:migrate",
     "db:generate": "pnpm --filter @imea/database db:generate",
+    "db:bootstrap": "pnpm --filter @imea/database db:bootstrap",
     "db:seed": "pnpm --filter @imea/database db:seed"
   },
   "devDependencies": {

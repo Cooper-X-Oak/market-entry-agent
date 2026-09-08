@@ -1,6 +1,10 @@
+import { mkdir, writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
+import { ExecutionError } from '@imea/agents';
+import { executionControl } from '@imea/agents';
 import { createHash, randomUUID } from 'node:crypto';
-import { and, eq } from 'drizzle-orm';
-import type { AgentRunRecord, BuiltContext, ModelUsage, RunStore } from '@imea/agents';
+import { and, eq, sql } from 'drizzle-orm';
+import type { AgentRunRecord, BuiltContext, ModelUsage, ProviderAttempt, RunStore } from '@imea/agents';
 import type { AgentTaskInput } from '@imea/contracts';
 import type { ConnectorRequest, ConnectorResult, ObjectStorageConnector } from '@imea/connectors';
 import { type Database, agentRuns, evidenceItems, promptVersions, sources, sourceSnapshots, toolRuns, TransactionManager } from '@imea/database';
@@ -30,11 +34,11 @@ export class DatabaseRunStore implements RunStore {
     const correlationId = randomUUID();
     const scope = { tenantId: input.tenantId, missionId: input.missionId, correlationId };
     const id = randomUUID();
-    await this.transactions.run({ tenantId: input.tenantId, actor: { type: 'agent', id: skillKey }, correlationId }, async (tx) => {
+    await this.transactions.independent({ tenantId: input.tenantId, actor: { type: 'agent', id: skillKey }, correlationId }, async (tx) => {
       const [prompt] = await tx.insert(promptVersions).values({ skillKey, version: promptVersion, systemTemplate: `Built-in ${skillKey} prompt`, inputSchemaVersion: 1, outputSchemaVersion: 1, modelConfig: { modelName }, active: 1 }).onConflictDoUpdate({ target: [promptVersions.skillKey, promptVersions.version], set: { active: 1 } }).returning();
       if (!prompt) throw new Error('Prompt version insert returned no row');
       const initialHash = createHash('sha256').update(JSON.stringify(input)).digest('hex');
-      await tx.insert(agentRuns).values({ id, tenantId: input.tenantId, missionId: input.missionId, opportunityId: input.opportunityId, activityType: input.skillKey, skillKey, status: 'running', modelProvider: this.providerName, modelName, promptVersionId: prompt.id, contextVersion: 1, inputContextHash: initialHash, evidenceItemIds: [...new Set(input.knownClaims.flatMap((claim) => claim.evidenceRefs))], inputArtifactIds: input.artifactRefs.map((item) => item.artifactId), outputArtifactVersionIds: [] });
+      await tx.insert(agentRuns).values({ id, tenantId: input.tenantId, missionId: input.missionId, opportunityId: input.opportunityId, activityType: input.skillKey, skillKey, status: 'running', modelProvider: this.providerName, modelName, promptVersionId: prompt.id, contextVersion: 1, inputContextHash: initialHash, evidenceItemIds: [...new Set(input.knownClaims.flatMap((claim) => claim.evidenceRefs))], inputArtifactIds: input.artifactRefs.map((item) => item.artifactId), outputArtifactVersionIds: [], executionAudit: { contractVersion: 'module-correction-v1', ...executionControl.getStore(), signal: undefined, usageState: 'unknown', cost: null, costSource: 'unknown', attempts: [] } });
     });
     this.runScopes.set(id, scope);
     return { id, input, skillKey, modelName, promptVersion };
@@ -43,7 +47,7 @@ export class DatabaseRunStore implements RunStore {
   async toolStarted(runId: string, connectorType: string, request: ConnectorRequest): Promise<string> {
     const scope = this.runScopes.get(runId) ?? { tenantId: request.tenantId, missionId: request.missionId, correlationId: randomUUID() };
     const id = randomUUID();
-    await this.transactions.run({ tenantId: scope.tenantId, actor: { type: 'agent', id: connectorType }, correlationId: scope.correlationId }, async (tx) => {
+    await this.transactions.independent({ tenantId: scope.tenantId, actor: { type: 'agent', id: connectorType }, correlationId: scope.correlationId }, async (tx) => {
       await tx.insert(toolRuns).values({ id, tenantId: scope.tenantId, missionId: scope.missionId, agentRunId: runId, connectorType, operation: request.operation, status: 'running', requestSummary: { query: request.query, url: request.url, options: request.options }, responseSummary: {}, sourceIds: [], snapshotIds: [], evidenceIds: [] });
     });
     this.toolScopes.set(id, scope);
@@ -59,7 +63,7 @@ export class DatabaseRunStore implements RunStore {
       const stored = await this.storage.put(scope.tenantId, scope.missionId, 'connector-results', JSON.stringify(item), 'application/json');
       return { ...item, snapshot: { ...item.snapshot, objectKey: stored.objectKey, contentHash: stored.contentHash } };
     }));
-    await this.transactions.run({ tenantId: scope.tenantId, actor: { type: 'agent', id: 'connector' }, correlationId: scope.correlationId }, async (tx) => {
+    await this.transactions.independent({ tenantId: scope.tenantId, actor: { type: 'agent', id: 'connector' }, correlationId: scope.correlationId }, async (tx) => {
       const sourceIds: string[] = [];
       const snapshotIds: string[] = [];
       const persistedEvidenceIds: string[] = [];
@@ -93,7 +97,7 @@ export class DatabaseRunStore implements RunStore {
   async toolFailed(toolRunId: string, error: unknown): Promise<void> {
     const scope = this.toolScopes.get(toolRunId);
     if (!scope) return;
-    await this.transactions.run({ tenantId: scope.tenantId, actor: { type: 'agent', id: 'connector' }, correlationId: scope.correlationId }, async (tx) => {
+    await this.transactions.independent({ tenantId: scope.tenantId, actor: { type: 'agent', id: 'connector' }, correlationId: scope.correlationId }, async (tx) => {
       await tx.update(toolRuns).set({ status: 'failed', errorMessage: errorFields(error).message, completedAt: new Date() }).where(eq(toolRuns.id, toolRunId));
     });
   }
@@ -101,16 +105,31 @@ export class DatabaseRunStore implements RunStore {
   async contextReady(runId: string, context: BuiltContext): Promise<void> {
     const scope = this.runScopes.get(runId);
     if (!scope) throw new Error(`Missing Agent Run scope for ${runId}`);
-    await this.transactions.run({ tenantId: scope.tenantId, actor: { type: 'agent', id: 'context-builder' }, correlationId: scope.correlationId }, async (tx) => {
+    await this.transactions.independent({ tenantId: scope.tenantId, actor: { type: 'agent', id: 'context-builder' }, correlationId: scope.correlationId }, async (tx) => {
       await tx.update(agentRuns).set({ contextVersion: context.contextVersion, inputContextHash: context.inputContextHash, evidenceItemIds: context.evidenceIds }).where(eq(agentRuns.id, runId));
     });
   }
 
-  async complete(runId: string, _output: unknown, usage: ModelUsage): Promise<void> {
+  async providerAttempt(runId: string, event: ProviderAttempt): Promise<void> {
+    const scope = this.runScopes.get(runId);
+    if (!scope) throw new Error('Missing audit scope');
+    try { await this.transactions.independent({ tenantId: scope.tenantId, actor: { type: 'agent', id: 'provider-audit' }, correlationId: scope.correlationId }, async tx => {
+      await tx.update(agentRuns).set({ executionAudit: sql`jsonb_set(coalesce(${agentRuns.executionAudit}, '{}'::jsonb), '{attempts}', coalesce(${agentRuns.executionAudit}->'attempts', '[]'::jsonb) || ${JSON.stringify([event])}::jsonb)`,
+        ...(event.usage ? { inputTokens: event.usage.inputTokens, outputTokens: event.usage.outputTokens } : {})
+      }).where(and(eq(agentRuns.id, runId), eq(agentRuns.tenantId, scope.tenantId)));
+    }); } catch {
+      const directory = process.env.IMEA_AUDIT_RECOVERY_DIR ?? join(process.cwd(), '.grok', 'verify-artifacts', 'provider-recovery');
+      await mkdir(directory, { recursive: true });
+      await writeFile(join(directory, `${runId}-${event.attempt}-${event.state}.json`), JSON.stringify({ runId, ...scope, event }), { flag: 'wx', mode: 0o600 });
+      throw new ExecutionError('AUDIT_UNAVAILABLE', 'Audit write failed; scoped recovery record retained, no further request permitted');
+    }
+  }
+
+  async complete(runId: string, output: unknown, usage: ModelUsage): Promise<void> {
     const scope = this.runScopes.get(runId);
     if (!scope) return;
-    await this.transactions.run({ tenantId: scope.tenantId, actor: { type: 'agent', id: 'runner' }, correlationId: scope.correlationId }, async (tx) => {
-      await tx.update(agentRuns).set({ status: 'succeeded', inputTokens: usage.inputTokens, outputTokens: usage.outputTokens, costAmount: String(usage.costAmount), completedAt: new Date() }).where(eq(agentRuns.id, runId));
+    await this.transactions.independent({ tenantId: scope.tenantId, actor: { type: 'agent', id: 'runner' }, correlationId: scope.correlationId }, async (tx) => {
+      await tx.update(agentRuns).set({ status: 'succeeded', inputTokens: usage.inputTokens, outputTokens: usage.outputTokens, ...(usage.costAmount === null ? {} : { costAmount: String(usage.costAmount) }), executionAudit: sql`jsonb_set(coalesce(${agentRuns.executionAudit}, '{}'::jsonb), '{validatedOutput}', ${JSON.stringify(output)}::jsonb)`, completedAt: new Date() }).where(eq(agentRuns.id, runId));
     });
   }
 
@@ -118,7 +137,7 @@ export class DatabaseRunStore implements RunStore {
     const scope = this.runScopes.get(runId);
     if (!scope) return;
     const fields = errorFields(error);
-    await this.transactions.run({ tenantId: scope.tenantId, actor: { type: 'agent', id: 'runner' }, correlationId: scope.correlationId }, async (tx) => {
+    await this.transactions.independent({ tenantId: scope.tenantId, actor: { type: 'agent', id: 'runner' }, correlationId: scope.correlationId }, async (tx) => {
       await tx.update(agentRuns).set({ status: 'failed', errorCode: fields.code, errorMessage: fields.message, completedAt: new Date() }).where(eq(agentRuns.id, runId));
     });
   }

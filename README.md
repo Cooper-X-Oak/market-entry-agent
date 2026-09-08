@@ -4,6 +4,18 @@ Industrial Market Entry Agent is a multi-tenant, evidence-backed market-entry wo
 
 The application implements the V1 PRD in [`docs/PRD/industrial-market-entry-agent-v1-prd.md`](docs/PRD/industrial-market-entry-agent-v1-prd.md). All demo organizations, people, websites and contact details are deterministic fictional fixtures.
 
+## 当前工作入口：BM1 / Vultr
+
+当前状态、已记录证据和验收口径统一维护在 [当前状态与 BM1 验收入口](docs/testing/README.md)。BM1 的业务范围与退出条件见 [BM1 业务纵向闭环计划](docs/ChatGptPlan/BM1-业务纵向闭环计划.md)：`Mission → Evidence → Route → Target → Contact → Opportunity → Action Card`。
+
+项目开发环境使用临时 Vultr 4 GB 服务器，本机通过 SSH Tunnel 访问。在项目根目录运行以下命令并保持窗口运行，再打开 `http://localhost:3000/login`：
+
+```powershell
+.\scripts\devserver-tunnel.ps1
+```
+
+部署与服务器操作见 [AGENTS.md](AGENTS.md)。下方 Local Mock 和 Docker Compose 是独立的本机演示场景；历史 UP01–UP10 交付记录见 [implementation-status.md](docs/implementation-status.md)。测试与验证按用户明确授权执行。
+
 ## System layout
 
 ```text
@@ -17,7 +29,7 @@ NestJS API ───────────────► PostgreSQL + pgvecto
 Temporal Server ◄────────── Temporal worker
                                   │
                     OpenAI Agents / Mock model
-                    Tavily / Browser / Documents
+                    OpenAI Web Search / Browser / Documents
                     Contact verification / S3
 ```
 
@@ -31,7 +43,7 @@ The repository is a pnpm/Turbo monorepo:
 - `packages/domain`: state machines, gates and opportunity scoring.
 - `packages/database`: Drizzle schema, migrations, RLS, repositories and seed.
 - `packages/workflows`: durable Mission, Opportunity and Refresh workflows.
-- `packages/agents`: 12 Agent Skills, prompts, evidence validation and eval harness.
+- `packages/agents`: Agent Skills, prompts, evidence validation and eval harness.
 - `packages/connectors`: live and deterministic public-research connectors.
 - `packages/policies`: tenant roles, permissions and budget controls.
 - `packages/evidence`: evidence coverage, freshness and entity resolution.
@@ -49,9 +61,24 @@ Use `pnpm install --frozen-lockfile`; CI rejects dependency drift.
 
 ## Environment variables
 
-Copy `.env.example` to `.env`. The four database URLs are intentionally role-specific: migrator owns DDL, API and Worker are tenant-scoped writers, and Projector can claim Outbox rows and write projections. `JWT_SECRET`, `COOKIE_SECRET` and `ENCRYPTION_KEY` must be replaced outside local fixtures. Temporal settings select the namespace/task-queue prefix; S3 settings target MinIO or an S3-compatible store; `OPENAI_*` and `TAVILY_API_KEY` are only required when the two Mock flags are disabled. `OTEL_EXPORTER_OTLP_ENDPOINT` is optional.
+Copy `.env.example` to `.env`. The four database URLs are intentionally role-specific: migrator owns DDL, API and Worker are tenant-scoped writers, and Projector can claim Outbox rows and write projections. `JWT_SECRET`, `COOKIE_SECRET` and `ENCRYPTION_KEY` must be replaced outside local fixtures. Temporal settings select the namespace/task-queue prefix; S3 settings target MinIO or an S3-compatible store. Live mode uses `OPENAI_API_KEY`, optional `OPENAI_BASE_URL`, and the three `OPENAI_MODEL_*` settings; `TAVILY_API_KEY` is an optional alternative search configuration. `OTEL_EXPORTER_OTLP_ENDPOINT` is optional.
+
+## 开发账号初始化与显式演示
+
+`pnpm db:bootstrap` 只创建默认开发账号、工作区和成员关系；重复执行保留已有密码、角色和状态，不创建或重写业务 Mission。首次初始化需使用具备身份初始化权限的 `DATABASE_URL`，不能使用受租户上下文约束的运行角色代替。
+
+当前 Vultr 开发启动链自动执行 `postgres-bootstrap`。`postgres-seed` 属于 `demo` profile，仅在明确需要完整演示数据时手动调用。已存在的 Demo 数据会保留，本次拆分不删除数据库记录。
+
+```bash
+# 在已授权的远端操作中，显式加载或重写固定 Demo 数据
+docker compose --env-file /etc/market-entry-agent/devserver.env -f docker-compose.devserver.yml --profile demo run --rm postgres-seed
+```
+
+`pnpm db:seed` 仍保留为本机完整演示入口。它会更新部分固定演示对象的状态，不能作为普通启动、恢复或真实业务验收的默认步骤。
 
 ## Local Mock-mode setup
+
+这是显式演示场景。复制配置后，先在 `.env` 中将 `MOCK_CONNECTORS` 和 `MOCK_MODEL_PROVIDER` 都设为 `true`；示例配置的默认值用于 Live 模式。
 
 PowerShell:
 
@@ -80,16 +107,16 @@ Email: owner@demo.local
 Password: Demo123!
 ```
 
-Set `DEMO_PASSWORD` before `pnpm db:seed` to choose a different demo password. Mock mode uses `MOCK_CONNECTORS=true` and `MOCK_MODEL_PROVIDER=true`; it requires no OpenAI or Tavily key and still provides the complete seeded demonstration.
+Set `DEMO_PASSWORD` before the first `pnpm db:bootstrap` or `pnpm db:seed` to choose the initial password; subsequent initialization does not reset an existing account. Mock mode uses `MOCK_CONNECTORS=true` and `MOCK_MODEL_PROVIDER=true`; it requires no OpenAI or Tavily key and still provides the complete seeded demonstration.
 
 ## Full Docker Compose
 
-After creating `.env` and replacing the local secrets:
+After creating `.env` and replacing the local secrets, provide the initialization-owner `DATABASE_URL` in the calling shell for the explicit bootstrap command:
 
 ```powershell
 docker compose up --build
 docker compose run --rm postgres-migrate
-docker compose run --rm api pnpm --filter @imea/database db:seed
+docker compose run --rm -e DATABASE_URL api pnpm --filter @imea/database db:bootstrap
 ```
 
 Compose starts PostgreSQL/pgvector, the migration job, Temporal, Temporal UI, MinIO, bucket initialization, API, Worker, Projector and Web.
@@ -102,7 +129,6 @@ Change the following in `.env`:
 MOCK_CONNECTORS=false
 MOCK_MODEL_PROVIDER=false
 OPENAI_API_KEY=...
-TAVILY_API_KEY=...
 ```
 
 The live connector boundary only uses public web pages, user-provided documents and authorized APIs. It does not guess private contact data or send outreach automatically. V1 users copy/export approved content, perform the external action, and record the interaction result.
@@ -112,10 +138,10 @@ The live connector boundary only uses public web pages, user-provided documents 
 ```powershell
 pnpm db:generate
 pnpm db:migrate
-pnpm db:seed
+pnpm db:bootstrap
 ```
 
-Migrations enable `pgcrypto`, `citext`, `pg_trgm` and `vector`, create all core/write/read-model tables, and add tenant RLS policies. Application writes that change business state write the domain event and outbox record in the same transaction. The seed is deterministic and idempotent for its fixed IDs.
+Migrations enable `pgcrypto`, `citext`, `pg_trgm` and `vector`, create all core/write/read-model tables, and add tenant RLS policies. Application writes that change business state write the domain event and outbox record in the same transaction. Bootstrap preserves existing identity records; the separate demo seed can rewrite fixed demonstration states.
 
 ## Tests
 
@@ -177,4 +203,4 @@ See:
 - [`docs/security-and-operations.md`](docs/security-and-operations.md)
 - [`docs/implementation-status.md`](docs/implementation-status.md)
 
-Final gate outcomes and evidence paths are maintained in [`docs/implementation-status.md`](docs/implementation-status.md).
+当前状态、BM1 验收口径与证据入口统一维护在 [当前状态与 BM1 验收入口](docs/testing/README.md)；[UP01–UP10 历史交付记录](docs/implementation-status.md) 保留当时的 PASS / BLOCKED，不代表当前版本的验收结果。

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { assertTenant, budgetState, can, requirePermission } from '../index.js';
 
-const budget = { maxTargets: 40, maxContactPaths: 160, maxSearchCalls: 80, maxBrowserPages: 120, maxAgentRuns: 200, maxModelTokens: 1_000_000, weeklyRefreshTargets: 20 };
+const budget = { maxTargets: 20, maxContactPaths: 160, maxSearchCalls: 80, maxBrowserPages: 120, maxAgentRuns: 200, maxModelTokens: 1_000_000, weeklyRefreshTargets: 20 };
 
 describe('authorization policy', () => {
   it('keeps full export and workspace management owner-only', () => {

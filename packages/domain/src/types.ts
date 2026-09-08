@@ -9,6 +9,24 @@ export interface GateResult {
   details?: Record<string, unknown>;
 }
 
+export interface CapabilityReviewGateInput {
+  highImpactClaimCount: number;
+  resolvedHighImpactClaimCount: number;
+  confirmedHighImpactClaimCount: number;
+  unsupportedDecisionCount: number;
+}
+
+export interface ResearchActionCardGateInput {
+  cardType: 'research';
+  opportunityStatus: OpportunityStatus;
+  targetRoleLabel: string;
+  routeId: string;
+  evidenceRefs: string[];
+  unknowns: string[];
+  researchPlan: string[];
+  objective: string;
+}
+
 export interface RouteReviewGateInput {
   approvedRouteIds: string[];
   acceptedArtifactVersionIds: string[];
@@ -37,6 +55,7 @@ export interface ActionCardGateInput {
   routeId: string;
   evidenceRefs: string[];
   unresolvedCriticalUnknowns: string[];
+  generatedContentCount: number;
 }
 
 export interface RouteGateInput {

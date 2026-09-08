@@ -7,7 +7,7 @@ const now = '2026-08-28T00:00:00.000Z';
 describe('mission request contract', () => {
   it('parses a complete mission and applies budget defaults', () => {
     const mission = createMissionRequestSchema.parse({ name: 'Germany entry', companyName: 'Demo Flow', companyWebsite: 'https://demo.example', productScope: 'Industrial valves', targetCountries: ['DE'], targetIndustries: ['Chemical'], targetProfiles: [{ type: 'distributor', description: 'Technical distributor' }], objective: 'Find executable entry paths', successDefinition: 'One approved action', outputLanguages: ['en'], budgetConfig: {} });
-    expect(mission.budgetConfig.maxTargets).toBe(40);
+    expect(mission.budgetConfig.maxTargets).toBe(20);
     expect(mission.targetCountries).toEqual(['DE']);
   });
 

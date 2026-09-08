@@ -13,7 +13,25 @@ import {
 } from '@imea/database';
 
 const CONSUMER_NAME = 'imea-main-projector-v1';
-const stageProgress: Record<string, number> = { draft: 0, compiling: 5, ingesting_company_data: 15, researching_routes: 30, awaiting_route_review: 40, researching_ecosystem: 55, researching_targets: 70, researching_contacts: 85, generating_actions: 95, active: 100, completed: 100, failed: 100, awaiting_budget_review: 100 };
+const stageProgress: Record<string, number> = { draft: 0, compiling: 5, ingesting_company_data: 12, researching_capabilities: 20, awaiting_capability_review: 28, researching_routes: 38, awaiting_route_review: 46, researching_ecosystem: 58, researching_targets: 70, awaiting_target_review: 78, researching_contacts: 86, generating_actions: 94, awaiting_action_review: 98, active: 100, completed: 100, failed: 100, awaiting_budget_review: 100 };
+const pendingActionByStage: Record<string, string[]> = {
+  awaiting_capability_review: ['capability_review'],
+  awaiting_route_review: ['market_route_review'],
+  awaiting_target_review: ['target_review'],
+  awaiting_action_review: ['action_card_review'],
+};
+const decisionByStage: Record<string, string> = {
+  awaiting_capability_review: 'capability_review',
+  awaiting_route_review: 'route_review',
+  awaiting_target_review: 'target_review',
+  awaiting_action_review: 'action_review',
+};
+const nextActionByStage: Record<string, string> = {
+  awaiting_capability_review: '确认企业能力边界',
+  awaiting_route_review: '批准至少一条市场进入路线',
+  awaiting_target_review: '从 Top 10 中选择 1–3 个目标',
+  awaiting_action_review: '核对并批准至少一张 Action Card',
+};
 
 interface EventPayload { tenantId: string; missionId?: string; opportunityId?: string; aggregateId: string; actor: { type: string; id?: string }; before?: unknown; after?: unknown; evidenceRefs?: string[]; metadata?: Record<string, unknown> }
 interface ClaimedOutbox { outbox_id: string; domain_event_id: string; tenant_id: string; event_type: string; aggregate_type: string; aggregate_id: string; payload: EventPayload; occurred_at: Date }
@@ -125,7 +143,7 @@ export class Projector {
         (SELECT count(*) FROM approvals a WHERE a.mission_id=m.id AND a.status='pending'),
         (SELECT count(*) FROM opportunities o WHERE o.mission_id=m.id AND o.priority IN ('high','critical')),
         (SELECT count(*) FROM interactions i WHERE i.mission_id=m.id AND i.occurred_at >= now() - interval '7 days'),
-        (SELECT coalesce(sum(ar.cost_amount),0) FROM agent_runs ar WHERE ar.mission_id=m.id), now()
+        (SELECT CASE WHEN count(*) FILTER (WHERE ar.cost_amount IS NULL) > 0 THEN NULL ELSE coalesce(sum(ar.cost_amount),0) END FROM agent_runs ar WHERE ar.mission_id=m.id), now()
       FROM missions m WHERE m.id=${payload.missionId}
       ON CONFLICT (mission_id) DO UPDATE SET
         status=EXCLUDED.status, current_stage=EXCLUDED.current_stage, approved_route_count=EXCLUDED.approved_route_count,
@@ -135,18 +153,17 @@ export class Projector {
         total_cost_amount=EXCLUDED.total_cost_amount, updated_at=now()
     `);
 
-    const [progress] = await db.execute<{ current_stage: string; total: number; action_ready: number; active: number; closed: number; workflow_run_id: string | null }>(sql`
-      SELECT m.current_stage::text,
-        count(o.id)::int AS total,
-        count(o.id) FILTER (WHERE o.status IN ('action_ready','approved'))::int AS action_ready,
-        count(o.id) FILTER (WHERE o.status IN ('contacted','responded','qualified','meeting','supplier_registration','sample','quotation'))::int AS active,
-        count(o.id) FILTER (WHERE o.status IN ('won','lost','archived'))::int AS closed,
-        max(wi.run_id) AS workflow_run_id
-      FROM missions m
-      LEFT JOIN opportunities o ON o.mission_id=m.id
-      LEFT JOIN workflow_instances wi ON wi.mission_id=m.id AND wi.workflow_type='mission'
-      WHERE m.id=${payload.missionId}
-      GROUP BY m.id
+    const [progress] = await db.execute<{ current_stage: string; execution_mode: string; total: number; action_ready: number; active: number; closed: number; workflow_run_id: string | null; candidate_target_count: number; selected_target_count: number; approved_action_card_count: number }>(sql`
+      SELECT m.current_stage::text, m.execution_mode,
+        (SELECT count(*)::int FROM opportunities o WHERE o.mission_id=m.id) AS total,
+        (SELECT count(*)::int FROM opportunities o WHERE o.mission_id=m.id AND o.status IN ('action_ready','approved')) AS action_ready,
+        (SELECT count(*)::int FROM opportunities o WHERE o.mission_id=m.id AND o.status IN ('contacted','responded','qualified','meeting','supplier_registration','sample','quotation')) AS active,
+        (SELECT count(*)::int FROM opportunities o WHERE o.mission_id=m.id AND o.status IN ('won','lost','archived')) AS closed,
+        (SELECT wi.run_id FROM workflow_instances wi WHERE wi.mission_id=m.id AND wi.workflow_type='mission' ORDER BY wi.updated_at DESC LIMIT 1) AS workflow_run_id,
+        (SELECT count(*)::int FROM target_assessments ta WHERE ta.mission_id=m.id AND ta.gate_passed=true AND ta.rank <= 10) AS candidate_target_count,
+        (SELECT count(*)::int FROM mission_entities me WHERE me.mission_id=m.id AND me.target_status='high_priority') AS selected_target_count,
+        (SELECT count(*)::int FROM action_cards ac JOIN opportunities o ON o.id=ac.opportunity_id WHERE o.mission_id=m.id AND ac.status IN ('approved','exported','executed','completed')) AS approved_action_card_count
+      FROM missions m WHERE m.id=${payload.missionId}
     `);
     const stage = progress?.current_stage ?? 'draft';
     await db.insert(missionProgressReadModel).values({
@@ -155,7 +172,13 @@ export class Projector {
       stage,
       stageProgress: stageProgress[stage] ?? 0,
       completedSteps: [], runningSteps: [], pendingSteps: [], failedSteps: [], budgetUsage: {},
-      pendingUserActions: stage === 'awaiting_route_review' ? ['market_route_review'] : [],
+      pendingUserActions: pendingActionByStage[stage] ?? [],
+      executionMode: progress?.execution_mode ?? 'live',
+      currentDecision: decisionByStage[stage] ?? null,
+      nextAction: nextActionByStage[stage] ?? null,
+      candidateTargetCount: progress?.candidate_target_count ?? 0,
+      selectedTargetCount: progress?.selected_target_count ?? 0,
+      approvedActionCardCount: progress?.approved_action_card_count ?? 0,
       workflowRunId: progress?.workflow_run_id,
       readModelVersion: event.aggregateVersion,
       childOpportunityTotal: progress?.total ?? 0,
@@ -165,7 +188,13 @@ export class Projector {
       lastEventId: event.id,
     }).onConflictDoUpdate({ target: missionProgressReadModel.missionId, set: {
       stage, stageProgress: stageProgress[stage] ?? 0,
-      pendingUserActions: stage === 'awaiting_route_review' ? ['market_route_review'] : [],
+      pendingUserActions: pendingActionByStage[stage] ?? [],
+      executionMode: progress?.execution_mode ?? 'live',
+      currentDecision: decisionByStage[stage] ?? null,
+      nextAction: nextActionByStage[stage] ?? null,
+      candidateTargetCount: progress?.candidate_target_count ?? 0,
+      selectedTargetCount: progress?.selected_target_count ?? 0,
+      approvedActionCardCount: progress?.approved_action_card_count ?? 0,
       workflowRunId: progress?.workflow_run_id,
       readModelVersion: event.aggregateVersion,
       childOpportunityTotal: progress?.total ?? 0,

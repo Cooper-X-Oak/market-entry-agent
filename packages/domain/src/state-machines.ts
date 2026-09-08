@@ -14,17 +14,21 @@ type TransitionMap<T extends string> = Readonly<Record<T, readonly T[]>>;
 export const missionStageTransitions: TransitionMap<MissionStage> = {
   draft: ['compiling', 'failed'],
   compiling: ['ingesting_company_data', 'failed'],
-  ingesting_company_data: ['researching_routes', 'failed'],
+  ingesting_company_data: ['researching_capabilities', 'failed'],
+  researching_capabilities: ['awaiting_capability_review', 'awaiting_budget_review', 'failed'],
+  awaiting_capability_review: ['researching_routes', 'awaiting_budget_review', 'failed'],
   researching_routes: ['awaiting_route_review', 'failed'],
   awaiting_route_review: ['researching_ecosystem', 'awaiting_budget_review', 'failed'],
   researching_ecosystem: ['researching_targets', 'awaiting_budget_review', 'failed'],
-  researching_targets: ['researching_contacts', 'awaiting_budget_review', 'failed'],
+  researching_targets: ['awaiting_target_review', 'awaiting_budget_review', 'failed'],
+  awaiting_target_review: ['researching_contacts', 'awaiting_budget_review', 'failed'],
   researching_contacts: ['generating_actions', 'awaiting_budget_review', 'failed'],
-  generating_actions: ['active', 'awaiting_budget_review', 'failed'],
+  generating_actions: ['awaiting_action_review', 'awaiting_budget_review', 'failed'],
+  awaiting_action_review: ['active', 'awaiting_budget_review', 'failed'],
   active: ['awaiting_budget_review', 'completed', 'failed'],
-  awaiting_budget_review: ['compiling', 'ingesting_company_data', 'researching_routes', 'awaiting_route_review', 'researching_ecosystem', 'researching_targets', 'researching_contacts', 'generating_actions', 'active', 'failed'],
+  awaiting_budget_review: ['compiling', 'ingesting_company_data', 'researching_capabilities', 'awaiting_capability_review', 'researching_routes', 'awaiting_route_review', 'researching_ecosystem', 'researching_targets', 'awaiting_target_review', 'researching_contacts', 'generating_actions', 'awaiting_action_review', 'active', 'failed'],
   completed: [],
-  failed: ['compiling', 'ingesting_company_data', 'researching_routes', 'researching_ecosystem', 'researching_targets', 'researching_contacts', 'generating_actions', 'active'],
+  failed: ['compiling', 'ingesting_company_data', 'researching_capabilities', 'researching_routes', 'researching_ecosystem', 'researching_targets', 'researching_contacts', 'generating_actions', 'active'],
 };
 
 export const contactTransitions: TransitionMap<ContactVerificationStatus> = {
@@ -40,8 +44,8 @@ export const contactTransitions: TransitionMap<ContactVerificationStatus> = {
 export const opportunityTransitions: TransitionMap<OpportunityStatus> = {
   observed: ['target_identified', 'archived'],
   target_identified: ['stakeholder_mapped', 'paused', 'archived', 'lost'],
-  stakeholder_mapped: ['contact_path_found', 'paused', 'archived', 'lost'],
-  contact_path_found: ['contact_path_verified', 'paused', 'archived', 'lost'],
+  stakeholder_mapped: ['contact_path_found', 'action_ready', 'paused', 'archived', 'lost'],
+  contact_path_found: ['contact_path_verified', 'action_ready', 'paused', 'archived', 'lost'],
   contact_path_verified: ['action_ready', 'paused', 'archived', 'lost'],
   action_ready: ['approved', 'paused', 'archived', 'lost'],
   approved: ['contacted', 'paused', 'archived', 'lost'],

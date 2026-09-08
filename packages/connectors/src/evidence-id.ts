@@ -3,10 +3,10 @@ import type { CollectedEvidence, ConnectorItem, ConnectorResult, EnrichedConnect
 
 const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
-export function evidenceIdForItem(item: ConnectorItem): string {
+export function evidenceIdForItem(item: ConnectorItem, namespace = ''): string {
   const declared = item.metadata.evidenceId;
-  if (typeof declared === 'string' && uuidPattern.test(declared)) return declared;
-  const hash = createHash('sha256').update(JSON.stringify({ title: item.title ?? '', url: item.url ?? '', content: item.content ?? '' })).digest('hex');
+  if (!namespace && typeof declared === 'string' && uuidPattern.test(declared)) return declared;
+  const hash = createHash('sha256').update(JSON.stringify({ namespace, declared: typeof declared === 'string' ? declared : '', title: item.title ?? '', url: item.url ?? '', content: item.content ?? '' })).digest('hex');
   return `${hash.slice(0, 8)}-${hash.slice(8, 12)}-4${hash.slice(13, 16)}-8${hash.slice(17, 20)}-${hash.slice(20, 32)}`;
 }
 
@@ -21,6 +21,7 @@ function collectedEvidence(item: ConnectorItem, evidenceId: string, rawObjectKey
   const fetchedAt = typeof item.metadata.fetchedAt === 'string'
     ? item.metadata.fetchedAt
     : item.metadata.fixture === true ? '2026-08-28T00:00:00.000Z' : new Date().toISOString();
+  const itemObjectKey = typeof item.metadata.objectKey === 'string' ? item.metadata.objectKey : undefined;
   return {
     evidenceId,
     source: {
@@ -36,7 +37,7 @@ function collectedEvidence(item: ConnectorItem, evidenceId: string, rawObjectKey
       fetchedAt,
       ...(typeof item.metadata.httpStatus === 'number' ? { httpStatus: item.metadata.httpStatus } : {}),
       contentHash,
-      objectKey: rawObjectKey ?? `connector-inline/${contentHash}.json`,
+      objectKey: itemObjectKey ?? rawObjectKey ?? `connector-inline/${contentHash}.json`,
       extractedText: content,
     },
     evidence: {
@@ -50,8 +51,8 @@ function collectedEvidence(item: ConnectorItem, evidenceId: string, rawObjectKey
   };
 }
 
-export function enrichConnectorEvidence(result: ConnectorResult): EnrichedConnectorResult {
-  const items = result.items.map((item) => ({ ...item, metadata: { ...item.metadata, evidenceId: evidenceIdForItem(item) } }));
+export function enrichConnectorEvidence(result: ConnectorResult, namespace = ''): EnrichedConnectorResult {
+  const items = result.items.map((item) => ({ ...item, metadata: { ...item.metadata, evidenceId: evidenceIdForItem(item, namespace) } }));
   return {
     ...result,
     items,

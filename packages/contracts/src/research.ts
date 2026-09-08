@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { confidenceSchema, uuidSchema } from './common.js';
-import { commercialValueBandSchema, contactTypeSchema, routeTypeSchema } from './enums.js';
+import { actionCardTypeSchema, commercialValueBandSchema, contactTypeSchema, routeTypeSchema } from './enums.js';
 
 export const agentTaskInputSchema = z.object({
   tenantId: uuidSchema,
@@ -70,15 +70,31 @@ export const ecosystemMapResultSchema = z.object({
   relationships: z.array(z.object({ sourceCandidateKey: z.string(), targetCandidateKey: z.string(), relationshipType: z.string(), confidence: confidenceSchema, evidenceRefs: z.array(uuidSchema) })),
 });
 
+export const targetRankingResultSchema = z.object({
+  targets: z.array(z.object({
+    organizationName: z.string().min(1),
+    website: z.url().optional(),
+    marketRole: z.string().min(1),
+    primaryRouteTitle: z.string().min(1),
+    productFit: confidenceSchema,
+    routeFit: confidenceSchema,
+    demandSignal: confidenceSchema,
+    contactability: confidenceSchema,
+    evidenceQuality: confidenceSchema,
+    finalScore: confidenceSchema,
+    rationale: z.string().min(1),
+    evidenceRefs: z.array(uuidSchema).min(1),
+  })).min(3).max(20),
+});
+
 export const stakeholderMapResultSchema = z.object({
-  stakeholders: z.array(z.object({ organizationId: uuidSchema, personCandidate: entityCandidateSchema.optional(), roleType: z.string(), title: z.string().optional(), decisionInfluence: confidenceSchema, contactPriority: z.number().int().min(1).max(10), relevanceReason: z.string(), evidenceRefs: z.array(uuidSchema), confidence: confidenceSchema })),
+  stakeholders: z.array(z.object({ personCandidate: entityCandidateSchema.optional(), roleType: z.string(), title: z.string().optional(), decisionInfluence: confidenceSchema, contactPriority: z.number().int().min(1).max(10), relevanceReason: z.string(), evidenceRefs: z.array(uuidSchema), confidence: confidenceSchema })).min(1),
 });
 
 export const contactPathResultSchema = z.object({
   contactPoints: z.array(z.object({
-    organizationId: uuidSchema,
-    personId: uuidSchema.optional(),
-    stakeholderRoleId: uuidSchema.optional(),
+    personName: z.string().optional(),
+    stakeholderRoleType: z.string().optional(),
     contactType: contactTypeSchema,
     value: z.string().min(1),
     normalizedValue: z.string().min(1),
@@ -111,10 +127,9 @@ export const opportunityQualificationResultSchema = z.object({
 });
 
 export const actionCardResultSchema = z.object({
-  targetStakeholderRoleId: uuidSchema,
-  primaryContactPointId: uuidSchema,
-  backupContactPointId: uuidSchema.optional(),
-  channel: contactTypeSchema,
+  cardType: actionCardTypeSchema,
+  targetRoleLabel: z.string().min(1),
+  channel: contactTypeSchema.optional(),
   objective: z.string(),
   contactReason: z.string(),
   timingReason: z.string(),
@@ -129,10 +144,14 @@ export const actionCardResultSchema = z.object({
   followUpPlan: z.array(z.object({ offsetDays: z.number().int().nonnegative(), channel: z.string(), objective: z.string() })),
   successSignals: z.array(z.string()),
   completionSignals: z.array(z.string()),
+  researchPlan: z.array(z.string()),
+  unknowns: z.array(z.string()),
+  criticalUnknowns: z.array(z.string()),
   evidenceRefs: z.array(uuidSchema),
 });
 
 export type AgentTaskInput = z.infer<typeof agentTaskInputSchema>;
 export type MarketRouteResearchResult = z.infer<typeof marketRouteResearchResultSchema>;
 export type EntityCandidate = z.infer<typeof entityCandidateSchema>;
+export type TargetRankingResult = z.infer<typeof targetRankingResultSchema>;
 export type ActionCardResult = z.infer<typeof actionCardResultSchema>;

@@ -1,6 +1,6 @@
 import { boolean, index, integer, jsonb, numeric, pgTable, primaryKey, text, timestamp, uniqueIndex, uuid, varchar } from 'drizzle-orm/pg-core';
 import { tenants, users } from './auth.js';
-import { actionCardStatusEnum, approvalStatusEnum, approvalTypeEnum, commercialValueBandEnum, confidenceLevelEnum, contactTypeEnum, contactVerificationMethodEnum, contactVerificationStatusEnum, interactionTypeEnum, opportunityStatusEnum, priorityEnum, verificationResultEnum } from './enums.js';
+import { actionCardStatusEnum, actionCardTypeEnum, approvalStatusEnum, approvalTypeEnum, commercialValueBandEnum, confidenceLevelEnum, contactTypeEnum, contactVerificationMethodEnum, contactVerificationStatusEnum, interactionTypeEnum, opportunityStatusEnum, priorityEnum, verificationResultEnum } from './enums.js';
 import { artifactVersions, missions, sources } from './missions.js';
 import { claims, entities, evidenceItems, marketRoutes, stakeholderRoles } from './research.js';
 
@@ -95,7 +95,7 @@ export const opportunities = pgTable('opportunities', {
   workflowId: varchar('workflow_id', { length: 240 }),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
-}, (table) => [index('opportunities_mission_status_idx').on(table.missionId, table.status), index('opportunities_mission_score_idx').on(table.missionId, table.score), index('opportunities_organization_idx').on(table.organizationId), uniqueIndex('opportunities_workflow_uidx').on(table.workflowId)]);
+}, (table) => [index('opportunities_mission_status_idx').on(table.missionId, table.status), index('opportunities_mission_score_idx').on(table.missionId, table.score), index('opportunities_organization_idx').on(table.organizationId), uniqueIndex('opportunities_workflow_uidx').on(table.workflowId), uniqueIndex('opportunities_mission_organization_route_uidx').on(table.missionId, table.organizationId, table.routeId)]);
 
 export const opportunityStakeholders = pgTable('opportunity_stakeholders', {
   opportunityId: uuid('opportunity_id').notNull().references(() => opportunities.id, { onDelete: 'cascade' }),
@@ -141,10 +141,12 @@ export const actionCards = pgTable('action_cards', {
   basedOnVersionNo: integer('based_on_version_no'),
   feedbackRefs: uuid('feedback_refs').array().notNull().default([]),
   status: actionCardStatusEnum('status').notNull().default('draft'),
-  targetStakeholderRoleId: uuid('target_stakeholder_role_id').notNull().references(() => stakeholderRoles.id),
-  primaryContactPointId: uuid('primary_contact_point_id').notNull().references(() => contactPoints.id),
+  cardType: actionCardTypeEnum('card_type').notNull().default('outreach'),
+  targetRoleLabel: text('target_role_label').notNull(),
+  targetStakeholderRoleId: uuid('target_stakeholder_role_id').references(() => stakeholderRoles.id),
+  primaryContactPointId: uuid('primary_contact_point_id').references(() => contactPoints.id),
   backupContactPointId: uuid('backup_contact_point_id').references(() => contactPoints.id),
-  channel: contactTypeEnum('channel').notNull(),
+  channel: contactTypeEnum('channel'),
   objective: text('objective').notNull(),
   contactReason: text('contact_reason').notNull(),
   timingReason: text('timing_reason').notNull(),
@@ -159,6 +161,8 @@ export const actionCards = pgTable('action_cards', {
   followUpPlan: jsonb('follow_up_plan').notNull().$type<Array<Record<string, unknown>>>(),
   successSignals: jsonb('success_signals').notNull().$type<string[]>(),
   completionSignals: jsonb('completion_signals').notNull().$type<string[]>(),
+  researchPlan: jsonb('research_plan').notNull().$type<string[]>().default([]),
+  unknowns: jsonb('unknowns').notNull().$type<string[]>().default([]),
   ownerId: uuid('owner_id').references(() => users.id),
   dueAt: timestamp('due_at', { withTimezone: true }),
   approvedBy: uuid('approved_by').references(() => users.id),
@@ -166,6 +170,11 @@ export const actionCards = pgTable('action_cards', {
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 }, (table) => [uniqueIndex('action_cards_version_uidx').on(table.opportunityId, table.versionNo)]);
+
+export const actionCardEvidenceLinks = pgTable('action_card_evidence_links', {
+  actionCardId: uuid('action_card_id').notNull().references(() => actionCards.id, { onDelete: 'cascade' }),
+  evidenceItemId: uuid('evidence_item_id').notNull().references(() => evidenceItems.id, { onDelete: 'cascade' }),
+}, (table) => [primaryKey({ columns: [table.actionCardId, table.evidenceItemId] })]);
 
 export const interactions = pgTable('interactions', {
   id: uuid('id').primaryKey().defaultRandom(),

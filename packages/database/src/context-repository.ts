@@ -62,10 +62,9 @@ export class AgentContextRepository {
       const claimRows = await tx.select().from(claims).where(and(eq(claims.tenantId, input.tenantId), eq(claims.missionId, input.missionId), ...(organization ? [eq(claims.subjectEntityId, organization.id)] : [])));
       const claimIds = claimRows.map((claim) => claim.id);
       const claimLinks = claimIds.length > 0 ? await tx.select().from(claimEvidenceLinks).where(inArray(claimEvidenceLinks.claimId, claimIds)) : [];
-      const evidenceIds = [...new Set([...claimLinks.map((link) => link.evidenceItemId), ...contactEvidenceRows.map((link) => link.evidenceItemId), ...interactionEvidenceRows.map((link) => link.evidenceItemId)])];
-      const evidenceRows = evidenceIds.length > 0
-        ? await tx.select({ evidence: evidenceItems, snapshot: sourceSnapshots, source: sources }).from(evidenceItems).innerJoin(sourceSnapshots, eq(sourceSnapshots.id, evidenceItems.sourceSnapshotId)).innerJoin(sources, eq(sources.id, sourceSnapshots.sourceId)).where(and(eq(evidenceItems.tenantId, input.tenantId), inArray(evidenceItems.id, evidenceIds)))
-        : [];
+      const linkedEvidenceIds = [...new Set([...claimLinks.map((link) => link.evidenceItemId), ...contactEvidenceRows.map((link) => link.evidenceItemId), ...interactionEvidenceRows.map((link) => link.evidenceItemId)])];
+      const evidenceRows = await tx.select({ evidence: evidenceItems, snapshot: sourceSnapshots, source: sources }).from(evidenceItems).innerJoin(sourceSnapshots, eq(sourceSnapshots.id, evidenceItems.sourceSnapshotId)).innerJoin(sources, eq(sources.id, sourceSnapshots.sourceId)).where(and(eq(evidenceItems.tenantId, input.tenantId), eq(evidenceItems.missionId, input.missionId))).orderBy(desc(evidenceItems.createdAt)).limit(240);
+      evidenceRows.sort((left, right) => Number(linkedEvidenceIds.includes(right.evidence.id)) - Number(linkedEvidenceIds.includes(left.evidence.id)) || right.evidence.createdAt.getTime() - left.evidence.createdAt.getTime());
       const artifactRows = await tx.select({ artifact: artifacts, version: artifactVersions }).from(artifacts).innerJoin(artifactVersions, eq(artifactVersions.artifactId, artifacts.id)).where(and(eq(artifacts.tenantId, input.tenantId), eq(artifacts.missionId, input.missionId), ...(opportunity ? [eq(artifacts.opportunityId, opportunity.id)] : []))).orderBy(desc(artifactVersions.versionNo));
       const approvalRows = opportunity ? await tx.select().from(approvals).where(and(eq(approvals.tenantId, input.tenantId), eq(approvals.missionId, input.missionId), eq(approvals.opportunityId, opportunity.id))).orderBy(desc(approvals.requestedAt)) : [];
       const [score] = opportunity ? await tx.select().from(opportunityScores).where(eq(opportunityScores.opportunityId, opportunity.id)).orderBy(desc(opportunityScores.versionNo)).limit(1) : [];
@@ -85,7 +84,7 @@ export class AgentContextRepository {
         contextVersion: 1,
         scope: { tenantId: input.tenantId, missionId: input.missionId, ...(opportunity ? { opportunityId: opportunity.id, organizationId: opportunity.organizationId, routeId: opportunity.routeId } : {}), ...(latestCard ? { actionCardId: latestCard.id } : {}) },
         mission: {
-          id: mission.id, companyName: mission.companyName, companyWebsite: mission.companyWebsite, productScope: mission.productScope,
+          id: mission.id, companyName: mission.companyName, companyWebsite: mission.companyWebsite, researchDefinition: mission.researchDefinition ?? undefined, productScope: mission.productScope,
           targetCountries: mission.targetCountries, targetIndustries: mission.targetIndustries, targetProfiles: mission.targetProfiles,
           objective: mission.objective, successDefinition: mission.successDefinition, outputLanguages: mission.outputLanguages,
           budget: mission.budgetConfig as BudgetConfig, stage: mission.currentStage,

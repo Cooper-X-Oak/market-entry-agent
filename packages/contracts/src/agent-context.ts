@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { confidenceSchema, timestampSchema, uuidSchema } from './common.js';
 import { commercialValueBandSchema, confidenceLevelSchema, missionStageSchema, opportunityStatusSchema, prioritySchema } from './enums.js';
 import { budgetConfigSchema } from './mission.js';
+import { researchDefinitionSchema } from './research-definition.js';
 
 export const marketRouteContextSchema = z.object({
   id: uuidSchema,
@@ -175,7 +176,8 @@ export const agentExecutionContextSchema = z.object({
   mission: z.object({
     id: uuidSchema,
     companyName: z.string(),
-    companyWebsite: z.url(),
+    companyWebsite: z.union([z.url(), z.literal('')]),
+    researchDefinition: researchDefinitionSchema.optional(),
     productScope: z.string(),
     targetCountries: z.array(z.string()),
     targetIndustries: z.array(z.string()),

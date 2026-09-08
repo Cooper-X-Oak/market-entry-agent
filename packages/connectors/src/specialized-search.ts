@@ -1,6 +1,5 @@
 import type { Connector, ConnectorItem, ConnectorRequest, ConnectorResult } from './types.js';
 import { ConnectorError } from './types.js';
-import type { WebSearchConnector } from './web-search.js';
 
 function field(content: string, pattern: RegExp): string | undefined {
   return content.match(pattern)?.[1]?.trim();
@@ -8,7 +7,7 @@ function field(content: string, pattern: RegExp): string | undefined {
 
 export class TenderSearchConnector implements Connector {
   readonly type = 'tender_search';
-  constructor(private readonly search: WebSearchConnector) {}
+  constructor(private readonly search: Connector) {}
 
   async execute(request: ConnectorRequest): Promise<ConnectorResult> {
     if (!request.query) throw new ConnectorError('VALIDATION_ERROR', 'Tender search query is required', false);
@@ -27,7 +26,7 @@ export class TenderSearchConnector implements Connector {
 
 export class SocialPublicSearchConnector implements Connector {
   readonly type = 'social_public_search';
-  constructor(private readonly search: WebSearchConnector) {}
+  constructor(private readonly search: Connector) {}
 
   async execute(request: ConnectorRequest): Promise<ConnectorResult> {
     if (!request.query) throw new ConnectorError('VALIDATION_ERROR', 'Public profile search query is required', false);

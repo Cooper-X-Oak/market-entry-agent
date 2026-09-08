@@ -7,12 +7,16 @@ export const missionStageSchema = z.enum([
   'draft',
   'compiling',
   'ingesting_company_data',
+  'researching_capabilities',
+  'awaiting_capability_review',
   'researching_routes',
   'awaiting_route_review',
   'researching_ecosystem',
   'researching_targets',
+  'awaiting_target_review',
   'researching_contacts',
   'generating_actions',
+  'awaiting_action_review',
   'active',
   'awaiting_budget_review',
   'completed',
@@ -76,6 +80,7 @@ export const opportunityStatusSchema = z.enum([
   'lost',
 ]);
 export const actionCardStatusSchema = z.enum(['draft', 'review', 'approved', 'changes_requested', 'exported', 'executed', 'completed', 'cancelled']);
+export const actionCardTypeSchema = z.enum(['outreach', 'research']);
 export const interactionTypeSchema = z.enum(['email_sent', 'message_sent', 'call', 'meeting', 'form_submitted', 'supplier_registration', 'exhibition_meeting', 'referral', 'response', 'qualification_update', 'sample_sent', 'quotation_sent']);
 export const prioritySchema = z.enum(['low', 'medium', 'high', 'critical']);
 export const confidenceLevelSchema = z.enum(['low', 'medium', 'high']);
@@ -89,3 +94,4 @@ export type ClaimStatus = z.infer<typeof claimStatusSchema>;
 export type OpportunityStatus = z.infer<typeof opportunityStatusSchema>;
 export type ContactVerificationStatus = z.infer<typeof contactVerificationStatusSchema>;
 export type ActionCardStatus = z.infer<typeof actionCardStatusSchema>;
+export type ActionCardType = z.infer<typeof actionCardTypeSchema>;

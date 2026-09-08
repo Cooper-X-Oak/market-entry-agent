@@ -13,3 +13,21 @@ test-results/
 .worktrees/
 .codex-transfer.tar.gz
 *.tsbuildinfo
+
+# 本地运行记录、私有验收材料及临时部署包
+/.grok/
+/artifacts/
+
+# 临时任务材料和原始会话导出
+/docs/TempTask/
+/docs/ChatGptPlan/0828🧠定义出海市场Agent_c06950a70296.json
+/docs/ChatGptPlan/0828🧠定义出海市场Agent_c06950a70296.md
+
+# 已有原始目录的重复压缩包
+/docs/逻辑图审计.zip
+/docs/ChatGptPlan/files/market-entry-agent.zip
+
+# 环境配置，仅保留模板
+.env.*
+!.env.example
+!.env.*.example

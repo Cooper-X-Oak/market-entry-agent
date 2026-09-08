@@ -8,18 +8,19 @@ import {
   missionBriefSchema,
   opportunityQualificationResultSchema,
   stakeholderMapResultSchema,
+  targetRankingResultSchema,
   type AgentTaskInput,
 } from '@imea/contracts';
 import type { ConnectorRequest } from '@imea/connectors';
 import { competitorResearchResultSchema, entityResolutionResultSchema, expertSignalResearchResultSchema, interactionInterpretationResultSchema } from './schemas.js';
 import type { AgentSkill } from './types.js';
 
-function query(input: AgentTaskInput, operation: string, queryText: string, connectorType = 'web_search'): ConnectorRequest {
-  return { tenantId: input.tenantId, missionId: input.missionId, operation, query: queryText, options: { connectorType, maxResults: 10 } };
+function query(input: AgentTaskInput, operation: string, queryText: string, connectorType = 'web_search', maxResults = 4): ConnectorRequest {
+  return { tenantId: input.tenantId, missionId: input.missionId, operation, query: queryText, options: { connectorType, maxResults } };
 }
 
-function localize(input: AgentTaskInput, suffixes: string[]): ConnectorRequest[] {
-  return suffixes.map((suffix) => query(input, 'search', `${input.objective} ${suffix}`));
+function localize(input: AgentTaskInput, suffixes: string[], maxResults = 4): ConnectorRequest[] {
+  return suffixes.map((suffix) => query(input, 'search', `${input.objective} ${suffix}`, 'web_search', maxResults));
 }
 
 const common = {
@@ -29,7 +30,7 @@ const common = {
 
 export const missionCompilerSkill: AgentSkill = {
   key: 'mission_compiler', name: 'Mission Compiler', objective: '把稀疏用户输入编译为结构化任务卡',
-  instructions: '规范化企业、产品、国家、目标对象、成功标准和预算。明确列出已知事实、初始假设和待确认问题。',
+  instructions: '只把用户需求编译为研究计划。委托方不等于供应方，研究产品不等于供货能力。保留 researchDefinition 的城市/国家边界及主体语义。没有上下文公开证据时 proposedClaims、knownFacts、contradictions 必须为空；用户陈述只用于任务定义，待研究判断放 initialAssumptions/openQuestions/unknowns。供应方缺失标记能力匹配未评估，不阻断客户研究。禁止创造或猜测 evidenceRefs。',
   outputSchema: agentTaskOutputSchema(missionBriefSchema), maxResearchLoops: 1, permittedConnectors: [], planQueries: () => [],
 };
 
@@ -43,29 +44,36 @@ export const capabilityEvidenceExtractorSkill: AgentSkill = {
 export const marketRouteResearcherSkill: AgentSkill = {
   key: 'market_route_researcher', name: 'Market Route Researcher', objective: '研究三至八条可解释的市场进入路线',
   instructions: '覆盖渠道、直采、EPC、招投标、展会、协会、专家网络或混合路线。每条路线说明适用场景、组织类型、角色、渠道、能力要求、证据、反证、成本和优先级。',
-  outputSchema: agentTaskOutputSchema(marketRouteResearchResultSchema), maxResearchLoops: 4, permittedConnectors: ['web_search', 'browser', 'tender_search'],
-  planQueries: (input) => localize(input, ['distributor procurement model', 'supplier registration', 'EPC contractors', 'tender award', 'trade association', 'exhibition exhibitors']),
+  outputSchema: agentTaskOutputSchema(marketRouteResearchResultSchema), maxResearchLoops: 4, evidenceStopThreshold: 12, permittedConnectors: ['web_search', 'browser', 'tender_search'],
+  planQueries: (input) => localize(input, ['distributor procurement model', 'supplier registration EPC contractors', 'tender award', 'trade association exhibition exhibitors'], 4),
 };
 
 export const competitorResearcherSkill: AgentSkill = {
   key: 'competitor_researcher', name: 'Competitor Researcher', objective: '研究竞争对手在目标市场的进入方式',
   instructions: '识别三至八个竞争对手，记录当地页面、办公室、渠道、展会、公开项目、认证、服务网络、市场门槛和可超越空间。',
-  outputSchema: agentTaskOutputSchema(competitorResearchResultSchema), maxResearchLoops: 4, permittedConnectors: ['web_search', 'browser'],
-  planQueries: (input) => localize(input, ['competitors local distributors', 'competitor regional office exhibition', 'competitor public project partner']),
+  outputSchema: agentTaskOutputSchema(competitorResearchResultSchema), maxResearchLoops: 4, evidenceStopThreshold: 6, permittedConnectors: ['web_search', 'browser'],
+  planQueries: (input) => localize(input, ['competitors local distributors', 'competitor public project partner'], 3),
 };
 
 export const expertSignalResearcherSkill: AgentSkill = {
   key: 'expert_signal_researcher', name: 'Expert Signal Researcher', objective: '发现行业观点与专家线索',
   instructions: '记录观点时间、来源、与交易的距离、可信度、商业立场、市场影响和公开触达可能性。',
-  outputSchema: agentTaskOutputSchema(expertSignalResearchResultSchema), maxResearchLoops: 3, permittedConnectors: ['web_search', 'browser', 'social_public_search'],
-  planQueries: (input) => localize(input, ['market expert interview', 'procurement challenges', 'distributor perspective', 'conference speaker']),
+  outputSchema: agentTaskOutputSchema(expertSignalResearchResultSchema), maxResearchLoops: 3, evidenceStopThreshold: 6, permittedConnectors: ['web_search', 'browser', 'social_public_search'],
+  planQueries: (input) => localize(input, ['market expert procurement challenges', 'distributor perspective conference speaker'], 3),
 };
 
 export const ecosystemMapperSkill: AgentSkill = {
   key: 'ecosystem_mapper', name: 'Ecosystem Mapper', objective: '建立实体与业务关系图谱',
   instructions: '围绕已批准路线发现终端、进口商、经销商、EPC、设计机构、协会、展会、专家、服务商、竞争对手和公开项目，并为每条关系附证据。',
-  outputSchema: agentTaskOutputSchema(ecosystemMapResultSchema), maxResearchLoops: 4, permittedConnectors: ['web_search', 'browser', 'tender_search', 'social_public_search'],
-  planQueries: (input) => localize(input, ['industry ecosystem organizations', 'importer distributor EPC', 'association exhibition project']),
+  outputSchema: agentTaskOutputSchema(ecosystemMapResultSchema), maxResearchLoops: 4, evidenceStopThreshold: 8, permittedConnectors: ['web_search', 'browser', 'tender_search', 'social_public_search'],
+  planQueries: (input) => localize(input, ['industry ecosystem organizations', 'importer distributor EPC', 'association exhibition project'], 3),
+};
+
+export const targetRankerSkill: AgentSkill = {
+  key: 'target_ranker', name: 'Target Ranker', objective: '从生态候选中形成可解释的目标组织排序',
+  instructions: '只返回当前任务上下文中已有的组织名称或官网。按产品适配、路线适配、需求信号、可触达性和证据质量评分；每个目标必须引用证据，优先形成十个可供业务选择的目标。',
+  outputSchema: agentTaskOutputSchema(targetRankingResultSchema), maxResearchLoops: 3, evidenceStopThreshold: 10, permittedConnectors: ['web_search', 'browser'],
+  planQueries: (input) => localize(input, ['official organization product market fit', 'official procurement supplier registration', 'official distributor EPC end user'], 4),
 };
 
 export const entityResolverSkill: AgentSkill = {
@@ -77,15 +85,15 @@ export const entityResolverSkill: AgentSkill = {
 export const stakeholderMapperSkill: AgentSkill = {
   key: 'stakeholder_mapper', name: 'Stakeholder Mapper', objective: '映射组织内部的利益相关角色',
   instructions: '识别使用者、技术影响者、采购、预算、审批、供应商准入、渠道、服务、项目及转介绍节点。允许人员未知但部门已知。',
-  outputSchema: agentTaskOutputSchema(stakeholderMapResultSchema), maxResearchLoops: 3, permittedConnectors: ['web_search', 'browser', 'social_public_search'],
-  planQueries: (input) => localize(input, ['procurement director engineering team', 'supplier qualification team', 'channel partnership manager']),
+  outputSchema: agentTaskOutputSchema(stakeholderMapResultSchema), maxResearchLoops: 3, evidenceStopThreshold: 6, permittedConnectors: ['web_search', 'browser', 'social_public_search'],
+  planQueries: (input) => localize(input, ['procurement engineering team', 'supplier qualification channel partnership'], 3),
 };
 
 export const contactPathFinderSkill: AgentSkill = {
   key: 'contact_path_finder', name: 'Contact Path Finder', objective: '发现公开商务触达路径',
   instructions: '官方来源优先；为高优先级目标给出主要路径、备用路径、关联角色、公开属性、来源位置、语言、时区和推荐顺序。禁止猜测私人联系方式。',
-  outputSchema: agentTaskOutputSchema(contactPathResultSchema), maxResearchLoops: 4, permittedConnectors: ['web_search', 'browser', 'social_public_search', 'contact_verification'],
-  planQueries: (input) => localize(input, ['official procurement contact', 'supplier registration contact', 'team purchasing manager']),
+  outputSchema: agentTaskOutputSchema(contactPathResultSchema), maxResearchLoops: 4, evidenceStopThreshold: 6, permittedConnectors: ['web_search', 'browser', 'social_public_search', 'contact_verification'],
+  planQueries: (input) => localize(input, ['official procurement contact', 'supplier registration contact', 'team purchasing manager'], 3),
 };
 
 export const opportunityQualifierSkill: AgentSkill = {
@@ -96,7 +104,7 @@ export const opportunityQualifierSkill: AgentSkill = {
 
 export const actionCardBuilderSkill: AgentSkill = {
   key: 'action_card_builder', name: 'Action Card Builder', objective: '生成可直接执行的市场进入行动卡',
-  instructions: '基于已确认企业能力、机会、主要与备用联系方式生成联系理由、当前时机、利益点、价值主张、首次目标、邮件、短消息、电话、附件、跟进与成功信号。',
+  instructions: '基于已确认企业能力、机会和公开触达证据生成行动卡。存在已验证公开联系方式时生成 outreach 卡；缺少可用公开联系方式时生成 research 卡，明确联系人研究目标、未知项、研究步骤和成功信号。只输出业务内容，内部数据库标识由服务端绑定。',
   outputSchema: agentTaskOutputSchema(actionCardResultSchema), maxResearchLoops: 2, permittedConnectors: [], planQueries: () => [],
 };
 
@@ -106,6 +114,6 @@ export const interactionInterpreterSkill: AgentSkill = {
   outputSchema: agentTaskOutputSchema(interactionInterpretationResultSchema), maxResearchLoops: 2, permittedConnectors: [], planQueries: () => [],
 };
 
-export const skillCatalog: readonly AgentSkill[] = [missionCompilerSkill, capabilityEvidenceExtractorSkill, marketRouteResearcherSkill, competitorResearcherSkill, expertSignalResearcherSkill, ecosystemMapperSkill, entityResolverSkill, stakeholderMapperSkill, contactPathFinderSkill, opportunityQualifierSkill, actionCardBuilderSkill, interactionInterpreterSkill];
+export const skillCatalog: readonly AgentSkill[] = [missionCompilerSkill, capabilityEvidenceExtractorSkill, marketRouteResearcherSkill, competitorResearcherSkill, expertSignalResearcherSkill, ecosystemMapperSkill, targetRankerSkill, entityResolverSkill, stakeholderMapperSkill, contactPathFinderSkill, opportunityQualifierSkill, actionCardBuilderSkill, interactionInterpreterSkill];
 
 export { common as emptyAgentOutputFields };

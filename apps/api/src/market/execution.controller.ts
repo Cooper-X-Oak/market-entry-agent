@@ -1,3 +1,4 @@
+import { downloadDisposition } from './download-filename.js';
 import { Body, Controller, Get, Param, Patch, Post, Query, Res } from '@nestjs/common';
 import type { FastifyReply } from 'fastify';
 import { z } from 'zod';
@@ -45,7 +46,7 @@ export class ExecutionController {
   @Post('action-cards/:actionCardId/decision') decision(@CurrentAuth() auth: AuthContext, @Param('missionId') missionId: string, @Param('actionCardId') actionCardId: string, @Body(new ZodPipe(actionDecisionSchema)) body: z.infer<typeof actionDecisionSchema>) { return this.service.decideActionCard(auth, missionId, actionCardId, body); }
   @Post('action-cards/:actionCardId/regenerate') regenerate(@CurrentAuth() auth: AuthContext, @Param('missionId') missionId: string, @Param('actionCardId') actionCardId: string) { return this.service.regenerateActionCard(auth, missionId, actionCardId); }
   @Post('action-cards/:actionCardId/execute') execute(@CurrentAuth() auth: AuthContext, @Param('missionId') missionId: string, @Param('actionCardId') actionCardId: string) { return this.service.executeActionCard(auth, missionId, actionCardId); }
-  @Get('action-cards/:actionCardId/export') async export(@CurrentAuth() auth: AuthContext, @Param('missionId') missionId: string, @Param('actionCardId') actionCardId: string, @Query('format') format: string | undefined, @Res() reply: FastifyReply) { const result = await this.service.actionCardExport(auth, missionId, actionCardId, format === 'csv' ? 'csv' : 'markdown'); return reply.header('Content-Type', result.contentType).header('Content-Disposition', `attachment; filename="${result.filename}"`).send(result.content); }
+  @Get('action-cards/:actionCardId/export') async export(@CurrentAuth() auth: AuthContext, @Param('missionId') missionId: string, @Param('actionCardId') actionCardId: string, @Query('format') format: string | undefined, @Res() reply: FastifyReply) { const result = await this.service.actionCardExport(auth, missionId, actionCardId, format === 'csv' ? 'csv' : 'markdown'); return reply.header('Content-Type', result.contentType).header('Content-Disposition', downloadDisposition(result.filename)).send(result.content); }
 
   @Post('opportunities/:opportunityId/interactions') addInteraction(@CurrentAuth() auth: AuthContext, @Param('missionId') missionId: string, @Param('opportunityId') opportunityId: string, @Body(new ZodPipe(interactionSchema)) body: z.infer<typeof interactionSchema>) { return this.service.addInteraction(auth, missionId, opportunityId, body); }
   @Get('opportunities/:opportunityId/interactions') opportunityInteractions(@CurrentAuth() auth: AuthContext, @Param('missionId') missionId: string, @Param('opportunityId') opportunityId: string) { return this.service.interactions(auth, missionId, opportunityId); }

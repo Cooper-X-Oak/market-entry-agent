@@ -6,6 +6,10 @@ import { budgetConfigSchema } from './mission.js';
 export const activityCommandScopeSchema = z.object({
   tenantId: uuidSchema,
   missionId: uuidSchema,
+  missionExecutionId: uuidSchema.optional(),
+  scopeVersion: z.literal(2).optional(),
+  businessId: z.string().min(1).optional(),
+  ownershipRunId: z.string().min(1).optional(),
   opportunityId: uuidSchema.optional(),
   organizationId: uuidSchema.optional(),
   routeId: uuidSchema.optional(),
@@ -18,9 +22,23 @@ export const activityCommandScopeSchema = z.object({
 });
 
 export const routeReviewSubmittedSignalSchema = z.object({
-  approvedRouteIds: z.array(uuidSchema).min(1),
+  approvedRouteIds: z.array(uuidSchema).min(1).max(3),
+  acceptedArtifactVersionIds: z.array(uuidSchema).min(1),
   decidedByUserId: uuidSchema,
   comment: z.string().optional(),
+  commandId: uuidSchema.optional(),
+});
+export const capabilityReviewSubmittedSignalSchema = z.object({
+  resolvedClaimIds: z.array(uuidSchema).min(1),
+  decidedByUserId: uuidSchema,
+  comment: z.string().optional(),
+  commandId: uuidSchema,
+});
+export const targetReviewSubmittedSignalSchema = z.object({
+  selectedTargetIds: z.array(uuidSchema).min(1).max(3),
+  decidedByUserId: uuidSchema,
+  comment: z.string().optional(),
+  commandId: uuidSchema,
 });
 export const missionPauseRequestedSignalSchema = z.object({ requestedByUserId: uuidSchema, reason: z.string().optional() });
 export const missionResumeRequestedSignalSchema = z.object({ requestedByUserId: uuidSchema });
@@ -43,6 +61,11 @@ export const actionCardDecisionSignalSchema = z.object({
   decidedByUserId: uuidSchema,
   expectedVersionNo: z.number().int().positive(),
 });
+export const actionCardVersionCreatedSignalSchema = z.object({
+  actionCardId: uuidSchema,
+  versionNo: z.number().int().positive(),
+  createdByUserId: uuidSchema,
+});
 export const interactionRecordedSignalSchema = z.object({ interactionId: uuidSchema, recordedByUserId: uuidSchema });
 export const manualResearchRequestedSignalSchema = z.object({ requestId: uuidSchema, requestedByUserId: uuidSchema, focus: z.string().optional() });
 export const opportunityPauseRequestedSignalSchema = z.object({ requestedByUserId: uuidSchema, reason: z.string().optional() });
@@ -64,6 +87,8 @@ export const missionWorkflowStateSchema = z.object({
   budgetReviewRequired: z.boolean(),
   pendingRefreshRequestIds: z.array(uuidSchema),
   pendingCapabilityResearchRequestIds: z.array(uuidSchema),
+  candidateTargetIds: z.array(uuidSchema).optional(),
+  selectedTargetIds: z.array(uuidSchema).optional(),
   lastProcessedSignalSequence: z.number().int().nonnegative(),
 });
 
@@ -93,6 +118,8 @@ export const refreshWorkflowResultSchema = z.object({
 
 export type ActivityCommandScope = z.infer<typeof activityCommandScopeSchema>;
 export type RouteReviewSubmittedSignal = z.infer<typeof routeReviewSubmittedSignalSchema>;
+export type CapabilityReviewSubmittedSignal = z.infer<typeof capabilityReviewSubmittedSignalSchema>;
+export type TargetReviewSubmittedSignal = z.infer<typeof targetReviewSubmittedSignalSchema>;
 export type MissionPauseRequestedSignal = z.infer<typeof missionPauseRequestedSignalSchema>;
 export type MissionResumeRequestedSignal = z.infer<typeof missionResumeRequestedSignalSchema>;
 export type ManualRefreshRequestedSignal = z.infer<typeof manualRefreshRequestedSignalSchema>;
@@ -101,6 +128,7 @@ export type BudgetUpdatedSignal = z.infer<typeof budgetUpdatedSignalSchema>;
 export type MissionCompletionRequestedSignal = z.infer<typeof missionCompletionRequestedSignalSchema>;
 export type OpportunityMilestoneReportedSignal = z.infer<typeof opportunityMilestoneReportedSignalSchema>;
 export type ActionCardDecisionSignal = z.infer<typeof actionCardDecisionSignalSchema>;
+export type ActionCardVersionCreatedSignal = z.infer<typeof actionCardVersionCreatedSignalSchema>;
 export type InteractionRecordedSignal = z.infer<typeof interactionRecordedSignalSchema>;
 export type ManualResearchRequestedSignal = z.infer<typeof manualResearchRequestedSignalSchema>;
 export type OpportunityPauseRequestedSignal = z.infer<typeof opportunityPauseRequestedSignalSchema>;

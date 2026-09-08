@@ -1,0 +1,421 @@
+{
+  "schemaVersion": 1,
+  "contractVersion": "module-correction-v1",
+  "lifecycle": "源码与契约长期保留；验收日志和构建候选在 .grok/verify-artifacts 私有目录，不公开发布",
+  "stateAuthority": "Mission 主表负责业务状态；Temporal 负责执行状态；Agent Run executionAudit 负责请求事实；Projector 从主表重建读模型",
+  "retryPolicy": "Provider 暂时故障最多3次总尝试，单次90秒、总截止240秒、最多6000输出token；SDK首轮内部重试强制关闭，Temporal主链Activity最多1次；输出/引用/取消/超时不自动重试",
+  "engineeringStatus": "ENGINEERING_PASS",
+  "compilerLive": "NOT_RUN_ON_CORRECTED_VERSION",
+  "deployment": "CANDIDATE_READY_NOT_DEPLOYED",
+  "modules": [
+    {
+      "id": "A00",
+      "responsibility": "当前链路与失败基线",
+      "status": "PASS",
+      "inputAndProducer": "用户规格、当前源码及历史喀山失败记录；原始 Provider 完整响应不可取得",
+      "preconditions": "仓库可读，保留原有修改",
+      "outputAndConsumer": "当前链路图、事实/假设表；由本轮全部纠正任务消费",
+      "invariants": "历史错误记录不能冒充完整响应，构造样本明确标记",
+      "sideEffectsAndCommit": "只读核对远端源码哈希及旧 Workflow；基线快照保存在私有目录",
+      "failureAndRetry": "不重放旧失败 Mission，不改历史数据",
+      "stateResponsibility": "Mission 主表负责业务状态；Temporal 负责执行状态；Agent Run executionAudit 负责请求事实；Projector 从主表重建读模型",
+      "idempotencyAndVersion": "module-correction-v1；历史输入保留歧义。具体提交键由A07定义，审计每个新Run单独保留。",
+      "code": [
+        "apps/api/src/market/missions.controller.ts",
+        "apps/worker/src/activities.ts",
+        "packages/agents/src/runner.ts",
+        "packages/database/src/transaction.ts"
+      ],
+      "tests": [
+        "packages/agents/src/__tests__/execution-boundaries.test.ts",
+        "scripts/acceptance/module-correction.integration.test.mts"
+      ],
+      "acceptanceEvidence": {
+        "directory": ".grok/verify-artifacts/20260908-module-correction/remote-validated",
+        "records": [
+          "evidence/acceptance-summary.json",
+          "evidence/database-remote-17.txt",
+          "evidence/runtime-checks.json"
+        ],
+        "gap": "旧模型原始完整响应缺失；保留失败现场。只读确认旧喀山 Temporal 为 CANCELLED，部署对账将纠正其遗留业务状态。"
+      }
+    },
+    {
+      "id": "A01",
+      "responsibility": "委托方、供应方、研究范围",
+      "status": "PASS",
+      "inputAndProducer": "API 用户陈述；现代 researchDefinition 显式主体/城市层级，旧 company 字段角色未知",
+      "preconditions": "供应方可空；研究产品、地区、角色必须存在",
+      "outputAndConsumer": "ResearchDefinition 与 mission_brief；供 Workflow、Context、Ranker 消费",
+      "invariants": "客户产品相关性不是供应方能力；Kazan/Казань/喀山等价，不扩大到全国",
+      "sideEffectsAndCommit": "新增可空 research_definition；draft后禁止改核心研究范围",
+      "failureAndRetry": "旧输入保持 legacy_ambiguous，不自动指定供应方",
+      "stateResponsibility": "Mission 主表负责业务状态；Temporal 负责执行状态；Agent Run executionAudit 负责请求事实；Projector 从主表重建读模型",
+      "idempotencyAndVersion": "module-correction-v1；历史输入保留歧义。具体提交键由A07定义，审计每个新Run单独保留。",
+      "code": [
+        "packages/contracts/src/research-definition.ts",
+        "packages/contracts/src/mission.ts",
+        "packages/database/src/schema/missions.ts",
+        "apps/api/src/market/market.service.ts",
+        "apps/worker/src/activities.ts"
+      ],
+      "tests": [
+        "packages/contracts/src/__tests__/research-definition.test.ts",
+        "scripts/acceptance/module-correction.integration.test.mts"
+      ],
+      "acceptanceEvidence": {
+        "directory": ".grok/verify-artifacts/20260908-module-correction/remote-validated",
+        "records": [
+          "evidence/acceptance-summary.json",
+          "evidence/database-remote-17.txt",
+          "evidence/runtime-checks.json"
+        ],
+        "gap": "真实供应方仍未知；不得从委托方或研究产品推断制造能力。隔离应用创建、喀山城市边界及迁移前数据兼容已通过。"
+      }
+    },
+    {
+      "id": "A02",
+      "responsibility": "Compiler 只编译研究计划",
+      "status": "PASS",
+      "inputAndProducer": "用户输入＋当前任务持久化证据集合；用户输入不充当外部事实",
+      "preconditions": "无证据时仍可编译；供应方未知跳过能力提取与该审核门",
+      "outputAndConsumer": "有确定性范围的 MissionBrief、假设和问题；供后续路线研究",
+      "invariants": "无证据 knownFacts/proposedClaims 为空；有证据事实需原文及合法引用；产品与地域以存储输入绑定",
+      "sideEffectsAndCommit": "通过校验后写 mission_brief；有效 proposedClaims 的引用附到 artifact，Compiler不直接写能力Claim",
+      "failureAndRetry": "无证据伪事实直接失败，不自修复或补UUID",
+      "stateResponsibility": "Mission 主表负责业务状态；Temporal 负责执行状态；Agent Run executionAudit 负责请求事实；Projector 从主表重建读模型",
+      "idempotencyAndVersion": "module-correction-v1；历史输入保留歧义。具体提交键由A07定义，审计每个新Run单独保留。",
+      "code": [
+        "packages/agents/src/compiler-contract.ts",
+        "packages/agents/src/skills.ts",
+        "packages/agents/src/runner.ts",
+        "apps/worker/src/activities.ts",
+        "packages/workflows/src/mission-workflow.ts"
+      ],
+      "tests": [
+        "packages/agents/src/__tests__/execution-boundaries.test.ts",
+        "packages/workflows/src/__tests__/mission.workflow.test.ts",
+        "scripts/acceptance/module-correction.integration.test.mts"
+      ],
+      "acceptanceEvidence": {
+        "directory": ".grok/verify-artifacts/20260908-module-correction/remote-validated",
+        "records": [
+          "evidence/acceptance-summary.json",
+          "evidence/database-remote-17.txt",
+          "evidence/runtime-checks.json"
+        ],
+        "gap": "受控 Compiler 原业务校验及失败留存通过；纠正版本真实 Provider 尚未运行。"
+      }
+    },
+    {
+      "id": "A03",
+      "responsibility": "证据集合、内容与联系值",
+      "status": "PASS",
+      "inputAndProducer": "AgentContextRepository按tenant/Mission通过Source/Snapshot连接读取的证据",
+      "preconditions": "只有已持久化并进入上下文的ID可引用；本轮不引入跨Mission复用",
+      "outputAndConsumer": "合法引用及保守的原文事实/公开联系值；由提交与导出消费",
+      "invariants": "合法引用必须来自当前持久化证据，引用存在但不支持判断仍拒绝。原文与联系方式精确核验；非原文语义由独立审查给出关系及逐字可核验摘录。推断不能升级为 observed，反对证据必须为 contradiction。",
+      "sideEffectsAndCommit": "声明/目标/联系引用写入原有关系表；导出新增claim-evidence-links",
+      "failureAndRetry": "EVIDENCE_INVALID不自动重试；不模糊猜测ID",
+      "stateResponsibility": "Mission 主表负责业务状态；Temporal 负责执行状态；Agent Run executionAudit 负责请求事实；Projector 从主表重建读模型",
+      "idempotencyAndVersion": "module-correction-v1；历史输入保留歧义。具体提交键由A07定义，审计每个新Run单独保留。",
+      "code": [
+        "packages/agents/src/context-builder.ts",
+        "packages/agents/src/evidence-validator.ts",
+        "packages/agents/src/runner.ts",
+        "apps/worker/src/activities.ts",
+        "packages/agents/src/content-review.ts",
+        "packages/agents/src/contact-content.ts"
+      ],
+      "tests": [
+        "packages/agents/src/__tests__/execution-boundaries.test.ts",
+        "scripts/acceptance/module-correction.integration.test.mts",
+        "scripts/acceptance/content-validation.integration.test.mts"
+      ],
+      "acceptanceEvidence": {
+        "directory": ".grok/verify-artifacts/20260908-module-correction/remote-validated",
+        "records": [
+          "evidence/acceptance-summary.json",
+          "evidence/database-remote-17.txt",
+          "evidence/runtime-checks.json"
+        ],
+        "gap": "受控原文、翻译、概括、推断、反对证据、联系方式正反例通过；语义审查不构成任意文本的形式化证明，真实研究质量另验。"
+      }
+    },
+    {
+      "id": "A04",
+      "responsibility": "Provider传输和错误边界",
+      "status": "PASS",
+      "inputAndProducer": "应用实际业务Zod Schema与有范围的Context",
+      "preconditions": "请求前审计写入成功；任务未取消",
+      "outputAndConsumer": "ModelResult或类型化错误，由AgentRunner/Activity消费",
+      "invariants": "完整Schema使用strict:false传输；原Zod与证据校验仍是硬门；不回退Mock",
+      "sideEffectsAndCommit": "响应后、业务解析前记录用量及响应标识；无法取得用量/费用为null",
+      "failureAndRetry": "区分暂时错误、配置、输出、引用、前置缺失、超时、取消、审计失败",
+      "stateResponsibility": "Mission 主表负责业务状态；Temporal 负责执行状态；Agent Run executionAudit 负责请求事实；Projector 从主表重建读模型",
+      "idempotencyAndVersion": "module-correction-v1；历史输入保留歧义。具体提交键由A07定义，审计每个新Run单独保留。",
+      "code": [
+        "packages/agents/src/model-provider.ts",
+        "packages/agents/src/execution-error.ts",
+        "apps/worker/src/execution-interceptor.ts",
+        "patches/postgres-3.4.9-closed-transaction.patch"
+      ],
+      "tests": [
+        "packages/agents/src/__tests__/model-provider.test.ts",
+        "packages/agents/src/__tests__/execution-boundaries.test.ts",
+        "scripts/acceptance/module-correction.integration.test.mts"
+      ],
+      "acceptanceEvidence": {
+        "directory": ".grok/verify-artifacts/20260908-module-correction/remote-validated",
+        "records": [
+          "evidence/acceptance-summary.json",
+          "evidence/database-remote-17.txt",
+          "evidence/runtime-checks.json"
+        ],
+        "gap": "真实 SDK 受控 HTTP 覆盖请求与错误边界；本轮无付费 Provider 调用。数据库断连所需 postgres 3.4.9 补丁已隔离验证，现有运行依赖未替换。"
+      }
+    },
+    {
+      "id": "A05",
+      "responsibility": "重试责任和总尝试",
+      "status": "PASS",
+      "inputAndProducer": "Provider/SDK/Temporal错误与取消信号",
+      "preconditions": "仅暂时性Provider故障允许自动重试",
+      "outputAndConsumer": "有界的生成尝试与审计事件；供AgentRunner消费",
+      "invariants": "0个SDK重试＋最多3次Wrapper尝试＋1次Temporal Activity；超时结果未知不自动重放",
+      "sideEffectsAndCommit": "每次Wrapper尝试追加intent/结果；不能把intent当已被Provider接受的请求",
+      "failureAndRetry": "Retry-After受总截止限制；无模型自修复循环",
+      "stateResponsibility": "Mission 主表负责业务状态；Temporal 负责执行状态；Agent Run executionAudit 负责请求事实；Projector 从主表重建读模型",
+      "idempotencyAndVersion": "module-correction-v1；历史输入保留歧义。具体提交键由A07定义，审计每个新Run单独保留。",
+      "code": [
+        "packages/agents/src/model-provider.ts",
+        "packages/workflows/src/mission-workflow.ts",
+        "packages/workflows/src/opportunity-workflow.ts",
+        "apps/worker/src/execution-interceptor.ts"
+      ],
+      "tests": [
+        "packages/agents/src/__tests__/execution-boundaries.test.ts",
+        "packages/workflows/src/__tests__/mission.workflow.test.ts",
+        "scripts/acceptance/module-correction.integration.test.mts"
+      ],
+      "acceptanceEvidence": {
+        "directory": ".grok/verify-artifacts/20260908-module-correction/remote-validated",
+        "records": [
+          "evidence/acceptance-summary.json",
+          "evidence/database-remote-17.txt",
+          "evidence/runtime-checks.json"
+        ],
+        "gap": "主链 Provider 有限重试、Temporal 单次及取消回归通过；不宣称所有其他工作流均已覆盖。"
+      }
+    },
+    {
+      "id": "A06",
+      "responsibility": "独立调用审计与短事务",
+      "status": "PASS",
+      "inputAndProducer": "Run/Activity标识、Context哈希、Provider事件",
+      "preconditions": "intent独立事务成功后才准发请求",
+      "outputAndConsumer": "execution_audit、nullable用量/费用、结束失败时私有恢复文件；供诊断和对账消费",
+      "invariants": "业务回滚不能回滚请求事实；started无terminal属于未知；不用0表示未知",
+      "sideEffectsAndCommit": "Agent Run 独立事务保存请求用量、错误和 validatedOutput；业务事务回滚不撤销调用记录，审计失败保留恢复记录。",
+      "failureAndRetry": "审计写失败不再发请求，结束记录失败保留恢复文件",
+      "stateResponsibility": "Mission 主表负责业务状态；Temporal 负责执行状态；Agent Run executionAudit 负责请求事实；Projector 从主表重建读模型",
+      "idempotencyAndVersion": "module-correction-v1；历史输入保留歧义。具体提交键由A07定义，审计每个新Run单独保留。",
+      "code": [
+        "apps/worker/src/run-store.ts",
+        "packages/database/src/transaction.ts",
+        "packages/database/src/schema/events.ts",
+        "apps/worker/src/activities.ts",
+        "apps/projector/src/projector.ts"
+      ],
+      "tests": [
+        "scripts/acceptance/module-correction.integration.test.mts",
+        "packages/agents/src/__tests__/execution-boundaries.test.ts"
+      ],
+      "acceptanceEvidence": {
+        "directory": ".grok/verify-artifacts/20260908-module-correction/remote-validated",
+        "records": [
+          "evidence/acceptance-summary.json",
+          "evidence/database-remote-17.txt",
+          "evidence/runtime-checks.json"
+        ],
+        "gap": "真实断连、业务回滚与已验证准备结果重用通过；费用未知保持 null，受控用量不能当真实费用。"
+      }
+    },
+    {
+      "id": "A07",
+      "responsibility": "业务提交幂等与生成缓存",
+      "status": "PASS",
+      "inputAndProducer": "稳定业务操作标识及已校验准备结果",
+      "preconditions": "核心研究定义不能在运行中被静默修改",
+      "outputAndConsumer": "唯一业务提交结果或已有结果；供Workflow消费",
+      "invariants": "业务键不包含Temporal runId；请求哈希排除追踪字段；prepare缓存带契约版本",
+      "sideEffectsAndCommit": "先查完成标记，再读/保存准备结果；事务内advisory lock＋业务写入＋完成标记",
+      "failureAndRetry": "提交失败可复用准备结果；并发生成仍可能收费多次，不宣称Provider exactly-once",
+      "stateResponsibility": "Mission 主表负责业务状态；Temporal 负责执行状态；Agent Run executionAudit 负责请求事实；Projector 从主表重建读模型",
+      "idempotencyAndVersion": "module-correction-v1；历史输入保留歧义。具体提交键由A07定义，审计每个新Run单独保留。",
+      "code": [
+        "apps/worker/src/activities.ts",
+        "packages/workflows/src/activity-scope.ts"
+      ],
+      "tests": [
+        "scripts/acceptance/module-correction.integration.test.mts"
+      ],
+      "acceptanceEvidence": {
+        "directory": ".grok/verify-artifacts/20260908-module-correction/remote-validated",
+        "records": [
+          "evidence/acceptance-summary.json",
+          "evidence/database-remote-17.txt",
+          "evidence/runtime-checks.json"
+        ],
+        "gap": "6 路同时执行收敛为一个业务产物及版本；不承诺并发竞争只产生一次 Provider 请求。"
+      }
+    },
+    {
+      "id": "A08",
+      "responsibility": "取消与终态收敛",
+      "status": "PASS",
+      "inputAndProducer": "Temporal当前Run终态、Activity取消信号、Mission状态",
+      "preconditions": "仅当前Run的已关闭状态可对账，不覆盖已完成/失败/归档终态",
+      "outputAndConsumer": "Mission failed/completed、workflow_instances、域事件；Projector从主表同步",
+      "invariants": "Mission 行锁串行化启动、提交和对账；根 Workflow 执行所有权传给子 Workflow，旧执行不能写入新执行。取消前提交与提交前取消分别处理。",
+      "sideEffectsAndCommit": "每15秒对账，读取Temporal后以Mission行锁提交；主链提交也检查终态与取消",
+      "failureAndRetry": "依赖可用时按15秒轮询恢复；外部服务/数据库失败时记录缺口并下次对账",
+      "stateResponsibility": "Mission 主表负责业务状态；Temporal 负责执行状态；Agent Run executionAudit 负责请求事实；Projector 从主表重建读模型",
+      "idempotencyAndVersion": "module-correction-v1；历史输入保留歧义。具体提交键由A07定义，审计每个新Run单独保留。",
+      "code": [
+        "apps/worker/src/execution-interceptor.ts",
+        "apps/worker/src/activities.ts",
+        "apps/worker/src/main.ts",
+        "packages/workflows/src/client.ts",
+        "packages/contracts/src/workflows.ts"
+      ],
+      "tests": [
+        "packages/agents/src/__tests__/execution-boundaries.test.ts",
+        "packages/workflows/src/__tests__/mission.workflow.test.ts",
+        "scripts/acceptance/module-correction.integration.test.mts"
+      ],
+      "acceptanceEvidence": {
+        "directory": ".grok/verify-artifacts/20260908-module-correction/remote-validated",
+        "records": [
+          "evidence/acceptance-summary.json",
+          "evidence/database-remote-17.txt",
+          "evidence/runtime-checks.json",
+          "evidence/reconciliation-measurement.json",
+          "evidence/deployment-reconciliation-impact.json"
+        ],
+        "gap": "取消/提交竞争、旧父子执行、真实 Temporal 取消及投影重放通过。1005 项受控 Temporal 列表 + 实际 DB 对账实测 32.091 秒，不是 15 秒保证。"
+      }
+    },
+    {
+      "id": "A09",
+      "responsibility": "重读与中文导出",
+      "status": "PASS",
+      "inputAndProducer": "当前Mission的持久化成果、引用、执行摘要",
+      "preconditions": "鉴权和Mission存在；失败与零目标同样可导出",
+      "outputAndConsumer": "RFC6266/8187下载响应、ZIP、Manifest、逐文件哈希；供业务复核",
+      "invariants": "中文无需改名；控制符/引号/路径字符清理；失败不得标成功；不导出原始审计或密钥",
+      "sideEffectsAndCommit": "只读本Mission业务数据，沿用导出事件；新增Claim引用和安全运行摘要",
+      "failureAndRetry": "读取失败明确报错，不插入补造结果",
+      "stateResponsibility": "Mission 主表负责业务状态；Temporal 负责执行状态；Agent Run executionAudit 负责请求事实；Projector 从主表重建读模型",
+      "idempotencyAndVersion": "module-correction-v1；历史输入保留歧义。具体提交键由A07定义，审计每个新Run单独保留。",
+      "code": [
+        "apps/api/src/market/download-filename.ts",
+        "apps/api/src/market/missions.controller.ts",
+        "apps/api/src/market/execution.controller.ts",
+        "apps/api/src/market/export.service.ts"
+      ],
+      "tests": [
+        "apps/api/src/market/download-filename.test.ts",
+        "scripts/acceptance/module-correction.integration.test.mts"
+      ],
+      "acceptanceEvidence": {
+        "directory": ".grok/verify-artifacts/20260908-module-correction/remote-validated",
+        "records": [
+          "evidence/acceptance-summary.json",
+          "evidence/database-remote-17.txt",
+          "evidence/runtime-checks.json"
+        ],
+        "gap": "实际 HTTP 重读与 ZIP/Manifest 哈希核验通过。重复导出按设计新增一条导出审计事件，其余业务记录数量保持；UI 下载未验。"
+      }
+    },
+    {
+      "id": "A10",
+      "responsibility": "最短集成与部署候选",
+      "status": "PASS",
+      "inputAndProducer": "A01—A09代码、契约、构建和隔离测试环境",
+      "preconditions": "必须有隔离PostgreSQL；不得用现有业务库初始化测试",
+      "outputAndConsumer": "候选文件清单、构建映射、部署/回退计划；由用户审查后部署",
+      "invariants": "局部单测和Compiler持久化测试不等于目标—联系—行动卡完整A10；工程通过才允许真实Compiler",
+      "sideEffectsAndCommit": "只在远端独立测试实例/数据库执行；现有业务服务、配置和数据库未部署、未迁移、未重启。194 文件候选及证据在私有目录留存。",
+      "failureAndRetry": "工程通过后集中确认扩展部署；部署后按既有授权恢复喀山及其余四地区。",
+      "stateResponsibility": "Mission 主表负责业务状态；Temporal 负责执行状态；Agent Run executionAudit 负责请求事实；Projector 从主表重建读模型",
+      "idempotencyAndVersion": "module-correction-v1；历史输入保留歧义。具体提交键由A07定义，审计每个新Run单独保留。",
+      "code": [
+        "scripts/acceptance/module-correction.integration.test.mts",
+        "scripts/acceptance/vitest.config.ts"
+      ],
+      "tests": [
+        "scripts/acceptance/module-correction.integration.test.mts",
+        "packages/workflows/src/__tests__/mission.workflow.test.ts"
+      ],
+      "acceptanceEvidence": {
+        "directory": ".grok/verify-artifacts/20260908-module-correction/remote-validated",
+        "records": [
+          "evidence/acceptance-summary.json",
+          "evidence/database-remote-17.txt",
+          "evidence/runtime-checks.json",
+          "candidate/manifest.json",
+          "evidence/workflow-remote-final-2.txt",
+          "evidence/typecheck-final2.txt",
+          "evidence/build-final2.txt"
+        ],
+        "gap": "受控外部响应经实际 Nest HTTP、Worker、Workflow、分角色数据库形成目标/联系路径/待审核卡、重读及导出；真实五地区、UI、认证及真实对象存储另验。"
+      }
+    }
+  ],
+  "verificationRevision": "remote-isolated-followup-20260908",
+  "verification": {
+    "environment": "远端独立 PostgreSQL 16 + pgvector，独立 Temporal 测试服务；实际 Nest HTTP / Worker / Workflow / API、Worker、Projector 数据库角色",
+    "suiteTests": 58,
+    "workflowTests": 3,
+    "allProcessesExitCode": 0,
+    "controlledExternalResponses": true,
+    "auth": "固定隔离测试身份；登录与鉴权未验收",
+    "reconciliation": {
+      "count": 1005,
+      "initialWaitMs": 15002,
+      "processingMs": 17089,
+      "convergenceMs": 32091
+    },
+    "candidateFiles": 194,
+    "applicationSources": 38,
+    "evidenceDirectory": ".grok/verify-artifacts/20260908-module-correction/remote-validated/evidence"
+  },
+  "liveRegions": [
+    {
+      "region": "喀山（城市）",
+      "status": "M1_BLOCKED",
+      "reason": "纠正版本尚未部署；未取得本地区完整真实业务验收"
+    },
+    {
+      "region": "马来西亚",
+      "status": "M1_BLOCKED",
+      "reason": "纠正版本尚未部署；未取得本地区完整真实业务验收"
+    },
+    {
+      "region": "印尼",
+      "status": "M1_BLOCKED",
+      "reason": "纠正版本尚未部署；未取得本地区完整真实业务验收"
+    },
+    {
+      "region": "哈萨克斯坦",
+      "status": "M1_BLOCKED",
+      "reason": "纠正版本尚未部署；未取得本地区完整真实业务验收"
+    },
+    {
+      "region": "越南",
+      "status": "M1_BLOCKED",
+      "reason": "纠正版本尚未部署；未取得本地区完整真实业务验收"
+    }
+  ]
+}

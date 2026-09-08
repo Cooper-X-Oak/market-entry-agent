@@ -1,5 +1,6 @@
 import type {
   ActionCardGateInput,
+  CapabilityReviewGateInput,
   ContactGateInput,
   ContactVerifiedGateInput,
   GateResult,
@@ -7,6 +8,7 @@ import type {
   OpportunityCreationGateInput,
   RouteGateInput,
   RouteReviewGateInput,
+  ResearchActionCardGateInput,
   TargetGateInput,
 } from './types.js';
 
@@ -15,9 +17,38 @@ function gate(checks: ReadonlyArray<readonly [boolean, string]>, details?: Recor
   return { passed: reasonCodes.length === 0, reasonCodes, failures: reasonCodes, ...(details ? { details } : {}) };
 }
 
+export function capabilityReviewGate(input: CapabilityReviewGateInput): GateResult {
+  return gate([
+    [input.highImpactClaimCount > 0, 'HIGH_IMPACT_CAPABILITY_REQUIRED'],
+    [input.resolvedHighImpactClaimCount === input.highImpactClaimCount, 'HIGH_IMPACT_CAPABILITY_UNRESOLVED'],
+    [input.confirmedHighImpactClaimCount > 0, 'CONFIRMED_CAPABILITY_REQUIRED'],
+    [input.unsupportedDecisionCount === 0, 'CAPABILITY_DECISION_EVIDENCE_REQUIRED'],
+  ], {
+    highImpactClaimCount: input.highImpactClaimCount,
+    resolvedHighImpactClaimCount: input.resolvedHighImpactClaimCount,
+    confirmedHighImpactClaimCount: input.confirmedHighImpactClaimCount,
+    unsupportedDecisionCount: input.unsupportedDecisionCount,
+  });
+}
+
+export function researchActionCardGate(input: ResearchActionCardGateInput): GateResult {
+  const allowedStatus = ['stakeholder_mapped', 'contact_path_found', 'contact_path_verified', 'action_ready'].includes(input.opportunityStatus);
+  return gate([
+    [input.cardType === 'research', 'RESEARCH_CARD_TYPE_REQUIRED'],
+    [allowedStatus, 'OPPORTUNITY_NOT_RESEARCHABLE'],
+    [input.targetRoleLabel.trim().length > 0, 'TARGET_ROLE_REQUIRED'],
+    [input.routeId.length > 0, 'APPROVED_ROUTE_REQUIRED'],
+    [input.evidenceRefs.length > 0, 'EVIDENCE_REQUIRED'],
+    [input.unknowns.length > 0, 'CONTACT_RESEARCH_UNKNOWN_REQUIRED'],
+    [input.researchPlan.length > 0, 'RESEARCH_PLAN_REQUIRED'],
+    [input.objective.trim().length > 0, 'RESEARCH_OBJECTIVE_REQUIRED'],
+  ], { opportunityStatus: input.opportunityStatus });
+}
+
 export function routeReviewGate(input: RouteReviewGateInput): GateResult {
   return gate([
     [input.approvedRouteIds.length > 0, 'ROUTE_APPROVAL_REQUIRED'],
+    [input.approvedRouteIds.length <= 3, 'ROUTE_SELECTION_LIMIT_EXCEEDED'],
     [input.acceptedArtifactVersionIds.length > 0, 'ACCEPTED_ROUTE_ARTIFACT_REQUIRED'],
   ], { approvedRouteCount: input.approvedRouteIds.length, acceptedArtifactVersionCount: input.acceptedArtifactVersionIds.length });
 }
@@ -69,6 +100,7 @@ export function actionCardGate(input: ActionCardGateInput | LegacyActionCardGate
     [input.routeId.length > 0, 'APPROVED_ROUTE_REQUIRED'],
     [input.evidenceRefs.length > 0, 'EVIDENCE_REQUIRED'],
     [input.unresolvedCriticalUnknowns.length === 0, 'CRITICAL_UNKNOWNS_UNRESOLVED'],
+    [input.generatedContentCount > 0, 'OUTREACH_CONTENT_REQUIRED'],
   ], { opportunityStatus: input.opportunityStatus, primaryContactStatus: input.primaryContactStatus });
 }
 

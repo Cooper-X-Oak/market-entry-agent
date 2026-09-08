@@ -1,0 +1,254 @@
+name: industrial-market-entry-agent-devserver
+
+x-app-common: &app-common
+  image: node:22-alpine
+  working_dir: /workspace
+  restart: unless-stopped
+  volumes:
+    - /opt/market-entry-agent:/workspace
+  env_file:
+    - /etc/market-entry-agent/devserver.env
+  environment:
+    NODE_ENV: development
+    APP_BASE_URL: http://localhost:3000
+    API_BASE_URL: http://localhost:4000
+    DATABASE_MIGRATOR_URL: postgresql://imea_migrator:imea_migrator@postgres:5432/imea
+    DATABASE_API_URL: postgresql://imea_api:imea_api@postgres:5432/imea
+    DATABASE_WORKER_URL: postgresql://imea_worker:imea_worker@postgres:5432/imea
+    DATABASE_PROJECTOR_URL: postgresql://imea_projector:imea_projector@postgres:5432/imea
+    TEMPORAL_ADDRESS: temporal:7233
+    TEMPORAL_NAMESPACE: default
+    TEMPORAL_TASK_QUEUE_PREFIX: imea
+    S3_ENDPOINT: http://minio:9000
+    S3_REGION: us-east-1
+    S3_BUCKET: market-entry
+    S3_ACCESS_KEY: minioadmin
+    S3_SECRET_KEY: minioadmin
+    S3_FORCE_PATH_STYLE: "true"
+  logging:
+    driver: json-file
+    options:
+      max-size: 10m
+      max-file: "2"
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_DB: imea
+      POSTGRES_USER: imea_owner
+      POSTGRES_PASSWORD: imea_owner
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./deploy/postgres/init-roles.sql:/docker-entrypoint-initdb.d/001-imea-roles.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U imea_owner -d imea"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "2"
+
+  temporal:
+    image: temporalio/auto-setup:1.27.2
+    environment:
+      DB: postgres12
+      DB_PORT: 5432
+      POSTGRES_USER: imea_owner
+      POSTGRES_PWD: imea_owner
+      POSTGRES_SEEDS: postgres
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "2"
+
+  temporal-ui:
+    image: temporalio/ui:2.39.0
+    environment:
+      TEMPORAL_ADDRESS: temporal:7233
+    ports:
+      - "127.0.0.1:8080:8080"
+    depends_on:
+      temporal:
+        condition: service_started
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "2"
+
+  minio:
+    image: minio/minio:RELEASE.2025-07-23T15-54-02Z
+    command: server /data --console-address :9001
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    ports:
+      - "127.0.0.1:9001:9001"
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "2"
+
+  minio-init:
+    image: minio/mc:RELEASE.2025-07-21T05-28-08Z
+    entrypoint: ["/bin/sh", "-c"]
+    command: ["mc alias set local http://minio:9000 minioadmin minioadmin && mc mb --ignore-existing local/market-entry"]
+    depends_on:
+      minio:
+        condition: service_healthy
+    restart: "no"
+
+  deps:
+    image: node:22-alpine
+    working_dir: /workspace
+    volumes:
+      - /opt/market-entry-agent:/workspace
+    command:
+      - sh
+      - -lc
+      - corepack enable && pnpm install --frozen-lockfile
+    restart: "no"
+
+  postgres-migrate:
+    image: node:22-alpine
+    working_dir: /workspace
+    volumes:
+      - /opt/market-entry-agent:/workspace
+    environment:
+      DATABASE_MIGRATOR_URL: postgresql://imea_migrator:imea_migrator@postgres:5432/imea
+    command:
+      - sh
+      - -lc
+      - corepack enable && pnpm --filter @imea/database db:migrate
+    depends_on:
+      postgres:
+        condition: service_healthy
+      deps:
+        condition: service_completed_successfully
+    restart: "no"
+
+  postgres-bootstrap:
+    image: node:22-alpine
+    working_dir: /workspace
+    volumes:
+      - /opt/market-entry-agent:/workspace
+    environment:
+      # Bootstrap creates the first tenant before app.tenant_id exists.
+      # The database enforces FORCE ROW LEVEL SECURITY, so it must use the
+      # bootstrap owner/superuser while runtime services remain role-scoped.
+      DATABASE_URL: postgresql://imea_owner:imea_owner@postgres:5432/imea
+      DEMO_PASSWORD: Demo123!
+    command:
+      - sh
+      - -lc
+      - corepack enable && pnpm --filter @imea/database db:bootstrap
+    depends_on:
+      postgres-migrate:
+        condition: service_completed_successfully
+    restart: "no"
+
+  # Explicit demo operation; excluded from ordinary development startup.
+  postgres-seed:
+    profiles: [demo]
+    image: node:22-alpine
+    working_dir: /workspace
+    volumes:
+      - /opt/market-entry-agent:/workspace
+    environment:
+      DATABASE_URL: postgresql://imea_owner:imea_owner@postgres:5432/imea
+      DEMO_PASSWORD: Demo123!
+    command:
+      - sh
+      - -lc
+      - corepack enable && pnpm --filter @imea/database db:seed
+    depends_on:
+      postgres-bootstrap:
+        condition: service_completed_successfully
+    restart: "no"
+
+  api:
+    <<: *app-common
+    # Retain the metadata-preserving emitted entrypoint introduced for the former
+    # 1 GiB host; changing the API startup strategy is a separate decision.
+    command:
+      - sh
+      - -lc
+      - corepack enable && pnpm --filter @imea/api start
+    ports:
+      - "127.0.0.1:4000:4000"
+    depends_on:
+      postgres-bootstrap:
+        condition: service_completed_successfully
+      temporal:
+        condition: service_started
+      minio-init:
+        condition: service_completed_successfully
+
+  worker:
+    <<: *app-common
+    # Temporal's native core bridge requires glibc and cannot load on Alpine.
+    image: node:22
+    command:
+      - sh
+      - -lc
+      - corepack enable && pnpm --filter @imea/worker dev
+    depends_on:
+      postgres-bootstrap:
+        condition: service_completed_successfully
+      temporal:
+        condition: service_started
+      minio-init:
+        condition: service_completed_successfully
+
+  projector:
+    <<: *app-common
+    command:
+      - sh
+      - -lc
+      - corepack enable && pnpm --filter @imea/projector dev
+    depends_on:
+      postgres-bootstrap:
+        condition: service_completed_successfully
+
+  web:
+    <<: *app-common
+    environment:
+      NODE_ENV: development
+      APP_BASE_URL: http://localhost:3000
+      API_BASE_URL: http://api:4000
+      NEXT_PUBLIC_API_BASE_URL: http://localhost:4000
+    command:
+      - sh
+      - -lc
+      - corepack enable && pnpm --filter @imea/web dev
+    ports:
+      - "127.0.0.1:3000:3000"
+    depends_on:
+      api:
+        condition: service_started
+
+volumes:
+  postgres-data:
+  minio-data:

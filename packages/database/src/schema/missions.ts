@@ -1,3 +1,4 @@
+import type { ResearchDefinition } from '@imea/contracts';
 import { index, integer, jsonb, pgTable, text, timestamp, uniqueIndex, uuid, varchar, vector } from 'drizzle-orm/pg-core';
 import { tenants, users } from './auth.js';
 import { artifactTypeEnum, artifactVersionStatusEnum, missionStageEnum, missionStatusEnum, sourceKindEnum, sourceStatusEnum, sourceTypeEnum } from './enums.js';
@@ -9,6 +10,7 @@ export const missions = pgTable('missions', {
   companyName: varchar('company_name', { length: 200 }).notNull(),
   companyWebsite: text('company_website').notNull(),
   productScope: text('product_scope').notNull(),
+  researchDefinition: jsonb('research_definition').$type<ResearchDefinition>(),
   targetCountries: text('target_countries').array().notNull(),
   targetIndustries: text('target_industries').array().notNull(),
   targetProfiles: jsonb('target_profiles').notNull().$type<Array<{ type: string; description: string }>>(),
@@ -16,6 +18,7 @@ export const missions = pgTable('missions', {
   successDefinition: text('success_definition').notNull(),
   outputLanguages: text('output_languages').array().notNull(),
   budgetConfig: jsonb('budget_config').notNull().$type<Record<string, number>>(),
+  executionMode: varchar('execution_mode', { length: 20 }).notNull().default('live'),
   status: missionStatusEnum('status').notNull().default('draft'),
   currentStage: missionStageEnum('current_stage').notNull().default('draft'),
   workflowId: varchar('workflow_id', { length: 240 }),
